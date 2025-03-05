@@ -1,6 +1,6 @@
 // Copyright (c) 2009-2010 Satoshi Nakamoto
 // Copyright (c) 2009-2018 The Bitcoin Core developers
-// Copyright (c) 2023 Uladzimir (t.me/cryptadev)
+// Copyright (c) 2023-2025 Uladzimir (t.me/vovanchik_net)
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
@@ -986,7 +986,11 @@ public:
      */
     bool CreateTransaction(const std::vector<CRecipient>& vecSend, CTransactionRef& tx, CReserveKey& reservekey, CAmount& nFeeRet, int& nChangePosInOut,
                            std::string& strFailReason, const CCoinControl& coin_control, bool sign = true);
-    bool CreateCoinStake (CBlockHeader& header, int64_t nSearchInterval, CMutableTransaction &txNew, CAmount& posReward);
+    std::vector<COutput> stakeCoins;
+    std::map<uint256, uint64_t> stakeAges;
+    int32_t stakeLastUpdateTime{0}, stakeLastSearchTime{0};
+    bool CreateStakeTransaction (CBlockHeader& header, CMutableTransaction &txNew, CAmount& posReward);
+    bool SignBlock(CBlock& block);
     bool CommitTransaction(CTransactionRef tx, mapValue_t mapValue, std::vector<std::pair<std::string, std::string>> orderForm, std::string fromAccount, CReserveKey& reservekey, CConnman* connman, CValidationState& state);
 
     void ListAccountCreditDebit(const std::string& strAccount, std::list<CAccountingEntry>& entries);

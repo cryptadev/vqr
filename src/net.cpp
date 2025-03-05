@@ -1,6 +1,6 @@
 // Copyright (c) 2009-2010 Satoshi Nakamoto
 // Copyright (c) 2009-2018 The Bitcoin Core developers
-// Copyright (c) 2021 Uladzimir (t.me/crypto_dev)
+// Copyright (c) 2021-2025 Uladzimir (t.me/vovanchik_net)
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
@@ -21,7 +21,6 @@
 #include <ui_interface.h>
 #include <utilstrencodings.h>
 
-#include <instantx.h>
 #include <masternode.h>
 
 #ifdef WIN32

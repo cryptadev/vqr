@@ -1,5 +1,5 @@
 // Copyright (c) 2011-2018 The Bitcoin Core developers
-// Copyright (c) 2021 Uladzimir (t.me/crypto_dev)
+// Copyright (c) 2023-2025 Uladzimir (t.me/vovanchik_net)
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
@@ -45,7 +45,7 @@ WalletModel::WalletModel(std::unique_ptr<interfaces::Wallet> wallet, interfaces:
     // This timer will be fired repeatedly to update the balance
     pollTimer = new QTimer(this);
     connect(pollTimer, SIGNAL(timeout()), this, SLOT(pollBalanceChanged()));
-    pollTimer->start(4*MODEL_UPDATE_DELAY);
+    pollTimer->start(2*MODEL_UPDATE_DELAY);
 
     subscribeToCoreSignals();
 }

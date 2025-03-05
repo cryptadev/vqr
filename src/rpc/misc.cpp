@@ -1,6 +1,6 @@
 // Copyright (c) 2010 Satoshi Nakamoto
 // Copyright (c) 2009-2018 The Bitcoin Core developers
-// Copyright (c) 2023 Uladzimir (t.me/cryptadev)
+// Copyright (c) 2023-2025 Uladzimir (t.me/vovanchik_net)
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
@@ -327,7 +327,7 @@ UniValue getaddressbalance(const JSONRPCRequest& request)
     if (!getAddressesFromParams(request.params, addresses)) {
         throw JSONRPCError(RPC_INVALID_ADDRESS_OR_KEY, "Invalid address");
     }
-    AddressInfo info; info.total_max = 100; 
+    CAddressInfo info; info.total_max = 100; 
     for (auto& it : addresses) {
         if (!GetAddressInfo(it, info))
             throw JSONRPCError(RPC_INVALID_ADDRESS_OR_KEY, "No information available for address");
@@ -336,16 +336,15 @@ UniValue getaddressbalance(const JSONRPCRequest& request)
     UniValue result(UniValue::VARR);
     for (auto& it : info.data) {
         UniValue output(UniValue::VOBJ);
-        output.pushKV("address", it.first.GetAddr());
-        output.pushKV("script", HexStr(it.first.script.begin(), it.first.script.end()));
-        if (it.second.iscoinbase) output.pushKV("coinbase", "true");
-        output.pushKV("value", ValueFromAmount(it.second.value));
-        output.pushKV("from", strprintf("[%d] %s:%d", it.second.height, it.first.out.hash.ToString(), it.first.out.n));
-        if (it.second.spend_height == 0) {
-            output.pushKV("to", "unspend");
-        } else {
-            output.pushKV("to", strprintf("[%d] %s:%d", it.second.spend_height, it.second.spend_hash.ToString(), it.second.spend_n));
-        }
+        CTxDestination ar;
+        output.pushKV("address", ExtractDestination (it.script, ar) ? EncodeDestination(ar) : ScriptToAsmStr(it.script));
+        output.pushKV("script", HexStr(it.script.begin(), it.script.end()));
+        output.pushKV("value", ValueFromAmount(it.value));
+        output.pushKV("height", ValueFromAmount(it.height));
+        output.pushKV(it.state != CAddressInfoState::SEND ? "from" : "to",
+            strprintf("%s:%d %s%s", it.tx_hash.ToString(), it.tx_out,
+                it.state == CAddressInfoState::SPEND ? "[SPENT]" : "", 
+                it.state == CAddressInfoState::MATURE ? "[MATURE]" : ""));
         result.push_back(output);
     }
     return result;

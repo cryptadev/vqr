@@ -1,6 +1,6 @@
 // Copyright (c) 2009-2010 Satoshi Nakamoto
 // Copyright (c) 2009-2018 The Bitcoin Core developers
-// Copyright (c) 2023 Uladzimir (t.me/cryptadev)
+// Copyright (c) 2023-2025 Uladzimir (t.me/vovanchik_net)
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
@@ -400,10 +400,6 @@ bool CheckBlock(const CBlock& block, CValidationState& state, const Consensus::P
 /** Check a block is completely valid from start to finish (only works on top of our current best block) */
 bool TestBlockValidity(CValidationState& state, const CChainParams& chainparams, const CBlock& block, CBlockIndex* pindexPrev, bool fCheckPOW = true, bool fCheckMerkleRoot = true) EXCLUSIVE_LOCKS_REQUIRED(cs_main);
 
-// pos: sign block or check signature
-bool SignBlock(CBlock& block, CWallet& keystore);
-bool CheckBlockSignature(const CBlock& block);
-
 /** Check whether witness commitments are required for block. */
 bool IsWitnessEnabled(const CBlockIndex* pindexPrev, const Consensus::Params& params);
 
@@ -500,14 +496,27 @@ bool CheckProofOfWork (const CBlockHeader& block, const Consensus::Params& param
 bool CheckProofOfStake (const CBlockHeader& block, const Consensus::Params& params, const COutPoint &out, 
     CAmount value, uint32_t time);
 
-struct AddressInfo {
-    CAmount receive_amount, send_amount;
-    int total_in, total_out, total_max;
-    std::vector<std::pair<CAddressKey, CAddressValue> > data;
+enum CAddressInfoState { RECEIVE, MATURE, SPEND, SEND };
 
-    AddressInfo () : receive_amount(0), send_amount(0), total_in(0), total_out(0), total_max(-1), data() { }
+struct CAddressInfoItem {
+    CScript script{};
+    CAmount value{0};
+    uint32_t height{0};
+    uint256 tx_hash{};
+    uint32_t tx_out{0};
+    CAddressInfoState state{CAddressInfoState::RECEIVE};
+
+    CAddressInfoItem (const CScript& ascript, CAmount avalue, uint32_t aheight, const uint256& atx_hash, uint32_t atx_out,
+        CAddressInfoState astate) : script(ascript), value(avalue), height(aheight), tx_hash(atx_hash), tx_out(atx_out),
+            state(astate) { };
 };
 
-bool GetAddressInfo (const CScript& script, AddressInfo& data);
+struct CAddressInfo {
+    CAmount receive_amount{0}, send_amount{0};
+    int total_in{0}, total_out{0}, total_max{-1}, height{0};
+    std::vector<CAddressInfoItem> data{};
+};
+
+bool GetAddressInfo (const CScript& script, CAddressInfo& data);
     
 #endif // BITCOIN_VALIDATION_H

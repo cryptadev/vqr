@@ -1,6 +1,6 @@
 // Copyright (c) 2009-2010 Satoshi Nakamoto
 // Copyright (c) 2009-2018 The Bitcoin Core developers
-// Copyright (c) 2023 Uladzimir (t.me/cryptadev)
+// Copyright (c) 2021-2025 Uladzimir (t.me/vovanchik_net)
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
@@ -49,8 +49,6 @@
 #include <stdint.h>
 #include <stdio.h>
 
-#include <governance.h>
-#include <instantx.h>
 #include <masternode.h>
 
 #ifdef ENABLE_WALLET
@@ -488,7 +486,6 @@ void SetupServerArgs()
 
     gArgs.AddArg("-masternode=<n>", strprintf(_("Enable the client to act as a masternode (0-1, default: %u)"), 0), false, OptionsCategory::OPTIONS);
     gArgs.AddArg("-mnconf=<file>", strprintf(_("Specify masternode configuration file (default: %s)"), "masternode.conf"), false, OptionsCategory::OPTIONS);
-    gArgs.AddArg("-enableinstantsend=<n>", strprintf(_("Enable InstantSend, show confirmations for locked transactions (0-1, default: %u)"), 1), false, OptionsCategory::OPTIONS);
 
     SetupChainParamsBaseOptions();
 
@@ -536,7 +533,7 @@ void SetupServerArgs()
 
 std::string LicenseInfo()
 {
-    const std::string URL_SOURCE_CODE = "<https://github.com/cryptadev/vqr>";
+    const std::string URL_SOURCE_CODE = "<https://github.com/vovanchik-net/vqr>";
     const std::string URL_WEBSITE = "<https://vqr.vovanchik.net>";
 
     return CopyrightHolders(strprintf(_("Copyright (C) %i-%i"), 2009, COPYRIGHT_YEAR) + " ") + "\n" +
@@ -746,13 +743,9 @@ static void ThreadCheckMN (CConnman& connman) {
                     mnodeman.CheckAndRemove(connman);
                     mnodeman.WarnMasternodeDaemonUpdates();
                     mnpayments.CheckAndRemove();
-                    instantsend.CheckAndRemove();
                 }
                 if(fMasternodeMode && (nTick % (60 * 5) == 0)) {     // 5 минут
                     mnodeman.DoFullVerificationStep(connman);
-                }
-                if(nTick % (60 * 5) == 0) {
-                    governance.DoMaintenance(connman);
                 }
             }
         }
@@ -1011,7 +1004,7 @@ bool AppInitParameterInteraction()
         return InitError(strprintf(_("Specified blocks directory \"%s\" does not exist."), gArgs.GetArg("-blocksdir", "").c_str()));
     }
 
-     // if using block pruning, then disallow txindex
+    // if using block pruning, then disallow txindex
     if (gArgs.GetArg("-prune", 0)) {
         if (gArgs.GetBoolArg("-txindex", DEFAULT_TXINDEX))
             return InitError(_("Prune mode is incompatible with -txindex."));
@@ -1764,9 +1757,6 @@ bool AppInitMain()
             break;
         }
     }
-
-    fEnableInstantSend = gArgs.GetBoolArg("-enableinstantsend", 0);
-    nInstantSendDepth = DEFAULT_INSTANTSEND_DEPTH;
 
     load_mn_dat ();
 

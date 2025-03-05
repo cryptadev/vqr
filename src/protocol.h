@@ -242,17 +242,12 @@ extern const char *BLOCKTXN;
 // Dash message types
 // NOTE: do NOT declare non-implmented here, we don't want them to be exposed to the outside
 // TODO: add description
-extern const char *TXLOCKREQUEST;
-extern const char *TXLOCKVOTE;
 extern const char *MASTERNODEPAYMENTVOTE;
 extern const char *MASTERNODEPAYMENTSYNC;
 extern const char *MNANNOUNCE;
 extern const char *MNPING;
 extern const char *DSEG;
 extern const char *SYNCSTATUSCOUNT;
-extern const char *MNGOVERNANCESYNC;
-extern const char *MNGOVERNANCEOBJECT;
-extern const char *MNGOVERNANCEOBJECTVOTE;
 extern const char *MNVERIFY;
 };
 
@@ -397,14 +392,10 @@ enum GetDataMsg
     MSG_FILTERED_WITNESS_BLOCK = MSG_FILTERED_BLOCK | MSG_WITNESS_FLAG,
     // Dash message types
     // NOTE: declare non-implmented here, we must keep this enum consistent and backwards compatible
-    MSG_TXLOCK_REQUEST = 11,
-    MSG_TXLOCK_VOTE = 12,
     MSG_MASTERNODE_PAYMENT_VOTE = 13,
     MSG_MASTERNODE_PAYMENT_BLOCK = 14,
     MSG_MASTERNODE_ANNOUNCE = 15,
     MSG_MASTERNODE_PING = 16,
-    MSG_GOVERNANCE_OBJECT = 17,
-    MSG_GOVERNANCE_OBJECT_VOTE = 18,
     MSG_MASTERNODE_VERIFY = 19,
 };
 

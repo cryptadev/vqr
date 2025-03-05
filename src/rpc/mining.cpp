@@ -1,6 +1,6 @@
 // Copyright (c) 2010 Satoshi Nakamoto
 // Copyright (c) 2009-2018 The Bitcoin Core developers
-// Copyright (c) 2023 Uladzimir (t.me/cryptadev)
+// Copyright (c) 2021-2025 Uladzimir (t.me/vovanchik_net)
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
@@ -213,7 +213,6 @@ static UniValue getmininginfo(const JSONRPCRequest& request)
     UniValue difficulty(UniValue::VOBJ);
     difficulty.push_back(Pair("proof-of-work",        (double)GetDifficulty(false)));
     difficulty.push_back(Pair("proof-of-stake",       (double)GetDifficulty(true)));
-    difficulty.push_back(Pair("search-interval",      (int)nLastCoinStakeSearchInterval));
     obj.push_back(Pair("difficulty",       difficulty));
     obj.pushKV("networkhashps",    getnetworkhashps(request));
     obj.pushKV("pooledtx",         (uint64_t)mempool.size());

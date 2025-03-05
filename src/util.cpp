@@ -1,6 +1,5 @@
 // Copyright (c) 2009-2010 Satoshi Nakamoto
 // Copyright (c) 2009-2018 The Bitcoin Core developers
-// Copyright (c) 2023 Uladzimir (t.me/cryptadev)
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
@@ -1210,10 +1209,10 @@ std::string CopyrightHolders(const std::string& strPrefix)
         strCopyrightHolders.replace(strCopyrightHolders.find("2009"), sizeof("2009")-1, "2020"); 
         std::string strPrefix1 = strPrefix;
         strPrefix1.replace(strPrefix1.find("2009"), sizeof("2009")-1, "2014");
-        strPrefix1.replace(strPrefix1.find("2023"), sizeof("2023")-1, "2018");
+        strPrefix1.replace(strPrefix1.find("2025"), sizeof("2025")-1, "2018");
         strCopyrightHolders += "\n" + strPrefix1 + "The Dash Core developers";
         std::string strPrefix2 = strPrefix;
-        strPrefix2.replace(strPrefix2.find("2023"), sizeof("2023")-1, "2018");
+        strPrefix2.replace(strPrefix2.find("2025"), sizeof("2025")-1, "2018");
         strCopyrightHolders += "\n" + strPrefix2 + "The Bitcoin Core developers";
     }
     return strCopyrightHolders;

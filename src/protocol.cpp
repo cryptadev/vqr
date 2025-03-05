@@ -42,17 +42,12 @@ const char *CMPCTBLOCK="cmpctblock";
 const char *GETBLOCKTXN="getblocktxn";
 const char *BLOCKTXN="blocktxn";
 
-const char *TXLOCKREQUEST="ix";
-const char *TXLOCKVOTE="txlvote";
 const char *MASTERNODEPAYMENTVOTE="mnw";
 const char *MASTERNODEPAYMENTSYNC="mnget";
 const char *MNANNOUNCE="mnb";
 const char *MNPING="mnp";
 const char *DSEG="dseg";
 const char *SYNCSTATUSCOUNT="ssc";
-const char *MNGOVERNANCESYNC="govsync";
-const char *MNGOVERNANCEOBJECT="govobj";
-const char *MNGOVERNANCEOBJECTVOTE="govobjvote";
 const char *MNVERIFY="mnv";
 } // namespace NetMsgType
 
@@ -87,17 +82,12 @@ const static std::string allNetMessageTypes[] = {
     NetMsgType::GETBLOCKTXN,
     NetMsgType::BLOCKTXN,
     
-    NetMsgType::TXLOCKREQUEST,
-    NetMsgType::TXLOCKVOTE,
     NetMsgType::MASTERNODEPAYMENTVOTE,
     NetMsgType::MASTERNODEPAYMENTSYNC,
     NetMsgType::MNANNOUNCE,
     NetMsgType::MNPING,
     NetMsgType::DSEG,
     NetMsgType::SYNCSTATUSCOUNT,
-    NetMsgType::MNGOVERNANCESYNC,
-    NetMsgType::MNGOVERNANCEOBJECT,
-    NetMsgType::MNGOVERNANCEOBJECTVOTE,
     NetMsgType::MNVERIFY,    
 };
 const static std::vector<std::string> allNetMessageTypesVec(allNetMessageTypes, allNetMessageTypes+ARRAYLEN(allNetMessageTypes));

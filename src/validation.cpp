@@ -1,6 +1,6 @@
 // Copyright (c) 2009-2010 Satoshi Nakamoto
 // Copyright (c) 2009-2018 The Bitcoin Core developers
-// Copyright (c) 2023 Uladzimir (t.me/cryptadev)
+// Copyright (c) 2021-2025 Uladzimir (t.me/vovanchik_net)
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
@@ -41,7 +41,6 @@
 #include <warnings.h>
 #include <wallet/wallet.h>
 
-#include <instantx.h>
 #include <masternode.h>
 
 #include <future>
@@ -191,6 +190,7 @@ CCriticalSection cs_main;
 
 BlockMap& mapBlockIndex = g_chainstate.mapBlockIndex;
 CChain& chainActive = g_chainstate.chainActive;
+std::atomic<int> chainActiveHeight{0};
 CBlockIndex *pindexBestHeader = nullptr;
 CWaitableCriticalSection g_best_block_mutex;
 CConditionVariable g_best_block_cv;
@@ -540,7 +540,7 @@ int GetUTXOConfirmations(const COutPoint& outpoint)
     // -1 means UTXO is yet unknown or already spent
     LOCK(cs_main);
     int nPrevoutHeight = GetUTXOHeight(outpoint);
-    return (nPrevoutHeight > -1 && chainActive.Tip()) ? chainActive.Height() - nPrevoutHeight + 1 : -1;
+    return (nPrevoutHeight > -1) ? chainActiveHeight - nPrevoutHeight + 1 : -1;
 }
 
 static bool AcceptToMemoryPoolWorker(const CChainParams& chainparams, CTxMemPool& pool, CValidationState& state, const CTransactionRef& ptx,
@@ -584,19 +584,6 @@ static bool AcceptToMemoryPoolWorker(const CChainParams& chainparams, CTxMemPool
         return state.Invalid(false, REJECT_DUPLICATE, "txn-already-in-mempool");
     }
 
-    // If this is a Transaction Lock Request check to see if it's valid
-    if (instantsend.HasTxLockRequest(hash) && !CTxLockRequest(tx).IsValid())
-        return state.DoS(10, error("AcceptToMemoryPool : CTxLockRequest %s is invalid", hash.ToString()),
-                            REJECT_INVALID, "bad-txlockrequest");
-
-    // Check for conflicts with a completed Transaction Lock
-    for (const CTxIn &txin : tx.vin) {
-        uint256 hashLocked;
-        if (instantsend.GetLockedOutPointTxHash(txin.prevout, hashLocked) && hash != hashLocked)
-            return state.DoS(10, error("AcceptToMemoryPool : Transaction %s conflicts with completed Transaction Lock %s",
-                    hash.ToString(), hashLocked.ToString()), REJECT_INVALID, "tx-txlock-conflict");
-    }
-
     // Check for conflicts with in-memory transactions
     std::set<uint256> setConflicts;
     for (const CTxIn &txin : tx.vin)
@@ -607,18 +594,6 @@ static bool AcceptToMemoryPoolWorker(const CChainParams& chainparams, CTxMemPool
             const CTransaction *ptxConflicting = itConflicting->second;
             if (!setConflicts.count(ptxConflicting->GetHash()))
             {
-                // InstantSend txes are not replacable
-                if (instantsend.HasTxLockRequest(ptxConflicting->GetHash())) {
-                    // this tx conflicts with a Transaction Lock Request candidate
-                    return state.DoS(0, error("AcceptToMemoryPool : Transaction %s conflicts with Transaction Lock Request %s",
-                                            hash.ToString(), ptxConflicting->GetHash().ToString()),
-                                    REJECT_INVALID, "tx-txlockreq-mempool-conflict");
-                } else if (instantsend.HasTxLockRequest(hash)) {
-                    // this tx is a tx lock request and it conflicts with a normal tx
-                    return state.DoS(0, error("AcceptToMemoryPool : Transaction Lock Request %s conflicts with transaction %s",
-                                            hash.ToString(), ptxConflicting->GetHash().ToString()),
-                                    REJECT_INVALID, "txlockreq-tx-mempool-conflict");
-                }
                 // Allow opt-out of transaction replacement by setting
                 // nSequence > MAX_BIP125_RBF_SEQUENCE (SEQUENCE_FINAL-2) on all inputs.
                 //
@@ -1528,7 +1503,7 @@ static bool AbortNode(CValidationState& state, const std::string& strMessage, co
 
 } // namespace
 
-std::map<CScript, std::pair<int, AddressInfo> > historyCache;
+std::map<CScript, std::pair<int, CAddressInfo> > historyCache;
 CCriticalSection historyCacheLock;
 
 void CleanAddressInfo (int hei = 0, bool dolock = true) {
@@ -1539,9 +1514,11 @@ void CleanAddressInfo (int hei = 0, bool dolock = true) {
     }
 }
 
-bool GetAddressInfo (const CScript& script, AddressInfo& data) {
+bool GetAddressInfo (const CScript& script, CAddressInfo& data) {
+    if (IsInitialBlockDownload())
+        return false;
     LOCK(historyCacheLock);
-    int hei = chainActive.Height();
+    int hei = chainActiveHeight;
     if (historyCache.count(script) > 0) {
         auto& item = historyCache[script];
         if (item.first == hei) {
@@ -1551,15 +1528,11 @@ bool GetAddressInfo (const CScript& script, AddressInfo& data) {
     }
     std::map<CAddressKey, CAddressValue> retmap;
     if (pblockaddressindex) pblockaddressindex->Read (script, retmap);
-    std::vector<std::pair<CAddressKey, CAddressValue> > retvec;
-    for (const auto& item : retmap)
-        retvec.push_back(std::make_pair(item.first, item.second));
-    std::sort(retvec.begin(), retvec.end(), 
-        [](const std::pair<CAddressKey, CAddressValue>& l, const std::pair<CAddressKey, CAddressValue>& r) {
-            return l.second.height > r.second.height; });
     data.receive_amount = data.send_amount = 0;
     data.total_in = data.total_out = 0;
-    for (const auto& it : retvec) {
+    data.height = hei;
+    data.data.reserve (retmap.size() * 2);
+    for (const auto& it : retmap) {
         data.total_in++;
         data.receive_amount += it.second.value;
         if (it.second.spend_height != 0) {
@@ -1567,8 +1540,17 @@ bool GetAddressInfo (const CScript& script, AddressInfo& data) {
             data.send_amount += it.second.value;
         }
         if ((it.second.spend_height != 0) && (data.total_max > 0) && (data.total_out > data.total_max)) continue;
-        data.data.push_back(std::make_pair(it.first, it.second));
+        data.data.push_back (CAddressInfoItem(it.first.script, it.second.value, it.second.height,
+            it.first.out.hash, it.first.out.n, (it.second.spend_height > 0) ? CAddressInfoState::SPEND : (
+                (it.second.iscoinbase && ((it.second.height + COINBASE_MATURITY) > hei)) ?
+                    CAddressInfoState::MATURE : CAddressInfoState::RECEIVE)));
+        if (it.second.spend_height > 0) {
+            data.data.push_back (CAddressInfoItem(it.first.script, it.second.value, it.second.spend_height,
+                it.second.spend_hash, it.second.spend_n, CAddressInfoState::SEND));
+        }
     }
+    std::sort(data.data.begin(), data.data.end(), [](const CAddressInfoItem& l, const CAddressInfoItem& r) {
+        return (l.height == r.height) ? (int)l.state - (int)r.state : l.height > r.height; });
     historyCache[script] = std::make_pair(hei, data);
     return true;
 }
@@ -2109,6 +2091,33 @@ bool CheckProofOfWork (const CBlockHeader& block, const Consensus::Params& param
     return !(UintToArith256(hash) > bnTarget);
 }
 
+bool CheckBlockSignature(const CBlock& block) {
+    if (block.GetHash() == Params().GetConsensus().hashGenesisBlock || !block.IsProofOfStake())
+        return block.vchBlockSig.empty();
+
+    std::vector<std::vector<unsigned char> > vSolutions;
+    txnouttype whichType;
+    const CTxOut& txout = block.vtx[1]->vout[0];
+
+    if (!Solver(txout.scriptPubKey, whichType, vSolutions))
+        return false;
+    if (whichType == TX_PUBKEY) {
+        const std::vector<unsigned char>& vchPubKey = vSolutions[0];
+        CPubKey key(vchPubKey);
+        if (block.vchBlockSig.empty())
+            return false;
+        return key.Verify(block.GetHash(), block.vchBlockSig);
+    }
+    if (whichType == TX_PUBKEYHASH) {
+        auto address = CKeyID(uint160(vSolutions[0]));
+        CPubKey pubkey;
+        if (!pubkey.RecoverCompact(block.GetHash(), block.vchBlockSig))
+            return false;
+        return (pubkey.GetID() == address);
+    }
+    return false;
+}
+
 void PruneOneUndoFile(const int fileNumber);
 void UnlinkPrunedUndoFiles(const std::set<int>& setFilesToPrune);
 
@@ -2356,6 +2365,7 @@ bool CChainState::DisconnectTip(CValidationState& state, const CChainParams& cha
     }
 
     chainActive.SetTip(pindexDelete->pprev);
+    chainActiveHeight = chainActive.Height();
 
     UpdateTip(pindexDelete->pprev, chainparams);
     // Let wallets know transactions went from 1-confirmed to
@@ -2486,6 +2496,7 @@ bool CChainState::ConnectTip(CValidationState& state, const CChainParams& chainp
     disconnectpool.removeForBlock(blockConnecting.vtx);
     // Update chainActive & related variables.
     chainActive.SetTip(pindexNew);
+    chainActiveHeight = chainActive.Height();
     UpdateTip(pindexNew, chainparams);
 
     int64_t nTime6 = GetTimeMicros(); nTimePostConnect += nTime6 - nTime5; nTimeTotal += nTime6 - nTime1;
@@ -3126,21 +3137,6 @@ bool CheckBlock(const CBlock& block, CValidationState& state, const Consensus::P
         if (block.vtx[i]->IsCoinBase())
             return state.DoS(100, false, REJECT_INVALID, "bad-cb-multiple", false, "more than one coinbase");
 
-    // instasend check
-    for(const auto& tx : block.vtx) {
-        if (tx->IsCoinBase()) continue;
-        // LOOK FOR TRANSACTION LOCK IN OUR MAP OF OUTPOINTS
-        for (const auto& txin : tx->vin) {
-            uint256 hashLocked;
-            if (instantsend.GetLockedOutPointTxHash(txin.prevout, hashLocked) && hashLocked != tx->GetHash()) {
-                // The node which relayed this will have to switch later,
-                // relaying instantsend data won't help it.
-                return state.DoS(100, false, REJECT_INVALID, "conflict-tx-lock", false, 
-                    strprintf("transaction %s conflicts with transaction lock %s", tx->GetHash().ToString(), hashLocked.ToString()));
-            }
-        }
-    }
-
     // Check transactions
     for (const auto& tx : block.vtx)
         if (!CheckTransaction(*tx, state, true))
@@ -3603,78 +3599,6 @@ bool TestBlockValidity(CValidationState& state, const CChainParams& chainparams,
     return true;
 }
 
-typedef std::vector<unsigned char> valtype;
-// pos: sign block
-bool SignBlock(CBlock& block, CWallet& keystore)
-{
-    assert(block.IsProofOfStake());
-
-    std::vector<valtype> vSolutions;
-    txnouttype whichType;
-    const CTxOut& txout = block.vtx[1]->vout[0]; //pos: coinstake output
-
-    if (!Solver(txout.scriptPubKey, whichType, vSolutions))
-        return false;
-    if (whichType == TX_PUBKEY)
-    {
-        // Sign
-        const valtype& vchPubKey = vSolutions[0];
-        CKey key;
-        CPubKey pubKey(vchPubKey);
-        keystore.SetUsedForPoS (true);
-        bool ret = keystore.GetKey(pubKey.GetID(), key);
-        keystore.SetUsedForPoS (false);
-        if (!ret) 
-            return false;
-        if (key.GetPubKey() != pubKey)
-            return false;
-        return key.Sign(block.GetHash(), block.vchBlockSig, 0);
-    }
-    if (whichType == TX_PUBKEYHASH) {
-        auto address = CKeyID(uint160(vSolutions[0]));
-        CKey key;
-        keystore.SetUsedForPoS (true);
-        bool ret = keystore.GetKey(address, key);
-        keystore.SetUsedForPoS (false);
-        if (!ret) 
-            return false;
-        if (key.GetPubKey().GetID() != address) 
-            return false;
-        return key.SignCompact (block.GetHash(), block.vchBlockSig);
-    }
-    return false;
-}
-
-// pos: check block signature
-bool CheckBlockSignature(const CBlock& block)
-{
-    if (block.GetHash() == Params().GetConsensus().hashGenesisBlock || !block.IsProofOfStake())
-        return block.vchBlockSig.empty();
-
-    std::vector<valtype> vSolutions;
-    txnouttype whichType;
-    const CTxOut& txout = block.vtx[1]->vout[0];
-
-    if (!Solver(txout.scriptPubKey, whichType, vSolutions))
-        return false;
-    if (whichType == TX_PUBKEY)
-    {
-        const valtype& vchPubKey = vSolutions[0];
-        CPubKey key(vchPubKey);
-        if (block.vchBlockSig.empty())
-            return false;
-        return key.Verify(block.GetHash(), block.vchBlockSig);
-    }
-    if (whichType == TX_PUBKEYHASH) {
-        auto address = CKeyID(uint160(vSolutions[0]));
-        CPubKey pubkey;
-        if (!pubkey.RecoverCompact(block.GetHash(), block.vchBlockSig))
-            return false;
-        return (pubkey.GetID() == address);
-    }
-    return false;
-}
-
 /**
  * BLOCK PRUNING CODE
  */
@@ -4065,6 +3989,7 @@ bool LoadChainTip(const CChainParams& chainparams)
         return false;
     }
     chainActive.SetTip(pindex);
+    chainActiveHeight = chainActive.Height();
 
     g_chainstate.PruneBlockIndexCandidates();
 
@@ -4285,6 +4210,7 @@ void UnloadBlockIndex()
 {
     LOCK(cs_main);
     chainActive.SetTip(nullptr);
+    chainActiveHeight = 0;
     pindexBestInvalid = nullptr;
     pindexBestHeader = nullptr;
     mempool.clear();

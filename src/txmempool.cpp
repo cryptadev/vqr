@@ -1,6 +1,5 @@
 // Copyright (c) 2009-2010 Satoshi Nakamoto
 // Copyright (c) 2009-2018 The Bitcoin Core developers
-// Copyright (c) 2021 Uladzimir (t.me/crypto_dev)
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
@@ -9,7 +8,6 @@
 #include <consensus/consensus.h>
 #include <consensus/tx_verify.h>
 #include <consensus/validation.h>
-#include <instantx.h>
 #include <validation.h>
 #include <policy/policy.h>
 #include <reverse_iterator.h>
@@ -914,10 +912,6 @@ int CTxMemPool::Expire(int64_t time) {
     indexed_transaction_set::index<entry_time>::type::iterator it = mapTx.get<entry_time>().begin();
     setEntries toremove;
     while (it != mapTx.get<entry_time>().end() && it->GetTime() < time) {
-        if (instantsend.IsLockedInstantSendTransaction(it->GetTx().GetHash())) {
-            it++;
-            continue;
-        }
         toremove.insert(mapTx.project<0>(it));
         it++;
     }

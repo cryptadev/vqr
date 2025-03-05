@@ -1,6 +1,6 @@
 // Copyright (c) 2009-2010 Satoshi Nakamoto
 // Copyright (c) 2009-2018 The Bitcoin Core developers
-// Copyright (c) 2023 Uladzimir (t.me/cryptadev)
+// Copyright (c) 2021-2025 Uladzimir (t.me/vovanchik_net)
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
@@ -29,8 +29,6 @@
 #include <utilmoneystr.h>
 #include <utilstrencodings.h>
 
-#include <governance.h>
-#include <instantx.h>
 #include <masternode.h>
 
 #include <memory>
@@ -945,12 +943,6 @@ bool static AlreadyHave(const CInv& inv) EXCLUSIVE_LOCKS_REQUIRED(cs_main)
     case MSG_WITNESS_BLOCK:
         return LookupBlockIndex(inv.hash) != nullptr;
 
-    case MSG_TXLOCK_REQUEST:
-        return instantsend.AlreadyHave(inv.hash);
-
-    case MSG_TXLOCK_VOTE:
-        return instantsend.AlreadyHave(inv.hash);
-
     case MSG_MASTERNODE_PAYMENT_VOTE:
         return mnpayments.mapMasternodePaymentVotes.count(inv.hash);
 
@@ -965,10 +957,6 @@ bool static AlreadyHave(const CInv& inv) EXCLUSIVE_LOCKS_REQUIRED(cs_main)
 
     case MSG_MASTERNODE_PING:
         return mnodeman.mapSeenMasternodePing.count(inv.hash);
-
-    case MSG_GOVERNANCE_OBJECT:
-    case MSG_GOVERNANCE_OBJECT_VOTE:
-        return !governance.ConfirmInventoryRequest(inv);
 
     case MSG_MASTERNODE_VERIFY:
         return mnodeman.mapSeenMasternodeVerification.count(inv.hash);
@@ -1191,22 +1179,6 @@ void static ProcessGetData(CNode* pfrom, const CChainParams& chainparams, CConnm
                 }
             }
             
-            if (!push && inv.type == MSG_TXLOCK_REQUEST) {
-                CTxLockRequest txLockRequest;
-                if (instantsend.GetTxLockRequest(inv.hash, txLockRequest)) {
-                    connman->PushMessage(pfrom, msgMaker.Make(NetMsgType::TXLOCKREQUEST, txLockRequest));
-                    push = true;
-                }
-            }
-
-            if (!push && inv.type == MSG_TXLOCK_VOTE) {
-                CTxLockVote vote;
-                if(instantsend.GetTxLockVote(inv.hash, vote)) {
-                    connman->PushMessage(pfrom, msgMaker.Make(NetMsgType::TXLOCKVOTE, vote));
-                    push = true;
-                }
-            }
-            
             if (!push && inv.type == MSG_MASTERNODE_PAYMENT_VOTE) {
                 if(mnpayments.HasVerifiedPaymentVote(inv.hash)) {
                     connman->PushMessage(pfrom, msgMaker.Make(NetMsgType::MASTERNODEPAYMENTVOTE, mnpayments.mapMasternodePaymentVotes[inv.hash]));
@@ -1240,35 +1212,6 @@ void static ProcessGetData(CNode* pfrom, const CChainParams& chainparams, CConnm
             if (!push && inv.type == MSG_MASTERNODE_PING) {
                 if (mnodeman.mapSeenMasternodePing.count(inv.hash)) {
                     connman->PushMessage (pfrom, msgMaker.Make(NetMsgType::MNPING, mnodeman.mapSeenMasternodePing[inv.hash]));
-                    push = true;
-                }
-            }
-
-            if (!push && inv.type == MSG_GOVERNANCE_OBJECT) {
-                LogPrint(BCLog::NET, "ProcessGetData -- MSG_GOVERNANCE_OBJECT: inv = %s\n", inv.ToString());
-                CDataStream ss(SER_NETWORK, pfrom->GetSendVersion());
-                bool topush = false;
-                if (governance.HaveObjectForHash(inv.hash)) {
-                    ss.reserve(1000);
-                    if (governance.SerializeObjectForHash(inv.hash, ss)) topush = true;
-                }
-                LogPrint(BCLog::NET, "ProcessGetData -- MSG_GOVERNANCE_OBJECT: topush = %d, inv = %s\n", topush, inv.ToString());
-                if (topush) {
-                    connman->PushMessage(pfrom, msgMaker.Make(NetMsgType::MNGOVERNANCEOBJECT, ss));
-                    push = true;
-                }
-            }
-                
-            if (!push && inv.type == MSG_GOVERNANCE_OBJECT_VOTE) {
-                CDataStream ss(SER_NETWORK, pfrom->GetSendVersion());
-                bool topush = false;
-                if (governance.HaveVoteForHash(inv.hash)) {
-                    ss.reserve(1000);
-                    if (governance.SerializeVoteForHash(inv.hash, ss)) topush = true;
-                }
-                if (topush) {
-                    LogPrint(BCLog::NET, "ProcessGetData -- pushing: inv = %s\n", inv.ToString());
-                    connman->PushMessage(pfrom, msgMaker.Make(NetMsgType::MNGOVERNANCEOBJECTVOTE, ss));
                     push = true;
                 }
             }
@@ -2096,7 +2039,7 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
     }
 
 
-    else if (strCommand == NetMsgType::TX || strCommand == NetMsgType::TXLOCKREQUEST)
+    else if (strCommand == NetMsgType::TX)
     {
         // Stop processing the transaction early if
         // We are in blocks only mode and peer is either not whitelisted or whitelistrelay is off
@@ -2109,19 +2052,10 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
         std::deque<COutPoint> vWorkQueue;
         std::vector<uint256> vEraseQueue;
         CTransactionRef ptx;
-        CTxLockRequest txLockRequest;
-        int nInvType = MSG_TX;
-        // Read data and assign inv type
-        if(strCommand == NetMsgType::TX) {
-            vRecv >> ptx;
-        } else if(strCommand == NetMsgType::TXLOCKREQUEST) {
-            vRecv >> txLockRequest;
-            ptx = txLockRequest.tx;
-            nInvType = MSG_TXLOCK_REQUEST;
-        }
+        vRecv >> ptx;
         const CTransaction& tx = *ptx;
 
-        CInv inv(nInvType, tx.GetHash());
+        CInv inv(MSG_TX, tx.GetHash());
         pfrom->AddInventoryKnown(inv);
 
         LOCK2(cs_main, g_cs_orphans);
@@ -2131,21 +2065,11 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
 
         pfrom->setAskFor.erase(inv.hash);
         mapAlreadyAskedFor.erase(inv.hash);
-        if (strCommand == NetMsgType::TXLOCKREQUEST) {
-            if (!instantsend.ProcessTxLockRequest(txLockRequest, *connman)) {
-                LogPrint(BCLog::IS, "TXLOCKREQUEST -- failed %s\n", txLockRequest.GetHash().ToString());
-                return false;
-            }
-        }
+
         std::list<CTransactionRef> lRemovedTxn;
 
         if (!AlreadyHave(inv) &&
             AcceptToMemoryPool(mempool, state, ptx, &fMissingInputs, &lRemovedTxn, false /* bypass_limits */, 0 /* nAbsurdFee */)) {
-            if (strCommand == NetMsgType::TXLOCKREQUEST) {
-                LogPrintf("TXLOCKREQUEST -- Transaction Lock Request accepted, txid=%s, peer=%d\n", tx.GetHash().ToString(), pfrom->GetId());
-                instantsend.AcceptLockRequest(txLockRequest);
-                instantsend.Vote(tx.GetHash(), *connman);
-            }
             mempool.check(pcoinsTip.get());
             RelayTransaction(tx, connman);
             for (unsigned int i = 0; i < tx.vout.size(); i++) {
@@ -2262,18 +2186,6 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
                 }
             } else if (tx.HasWitness() && RecursiveDynamicUsage(*ptx) < 100000) {
                 AddToCompactExtraTransactions(ptx);
-            }
-            if (strCommand == NetMsgType::TXLOCKREQUEST && !AlreadyHave(inv)) {
-                // i.e. AcceptToMemoryPool failed, probably because it's conflicting
-                // with existing normal tx or tx lock for another tx. For the same tx lock
-                // AlreadyHave would have return "true" already.
-
-                // It's the first time we failed for this tx lock request,
-                // this should switch AlreadyHave to "true".
-                instantsend.RejectLockRequest(txLockRequest);
-                // this lets other nodes to create lock request candidate i.e.
-                // this allows multiple conflicting lock requests to compete for votes
-                RelayTransaction(tx, connman);
             }
 
             if (pfrom->fWhitelisted && gArgs.GetBoolArg("-whitelistforcerelay", DEFAULT_WHITELISTFORCERELAY)) {
@@ -2584,9 +2496,7 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
     else {
         if (mnodeman.ProcessMessage(pfrom, strCommand, vRecv, *connman)) return true;
         if (mnpayments.ProcessMessage(pfrom, strCommand, vRecv, *connman)) return true;
-        if (instantsend.ProcessMessage(pfrom, strCommand, vRecv, *connman)) return true;
         if (masternodeSync.ProcessMessage(pfrom, strCommand, vRecv)) return true;
-        if (governance.ProcessMessage(pfrom, strCommand, vRecv, *connman)) return true;
         if (votes.ProcessMessage(pfrom, strCommand, vRecv)) return true;
 
         // Ignore unknown commands for extensibility

@@ -96,8 +96,6 @@ BITCOIN_CORE_H = \
   bech32.h \
   bloom.h \
   blockencodings.h \
-  cachemap.h \
-  cachemultimap.h \
   chain.h \
   chainparams.h \
   chainparamsbase.h \
@@ -117,12 +115,10 @@ BITCOIN_CORE_H = \
   core_memusage.h \
   cuckoocache.h \
   fs.h \
-  governance.h \
   httprpc.h \
   httpserver.h \
   indirectmap.h \
   init.h \
-  instantx.h \
   interfaces/handler.h \
   interfaces/node.h \
   interfaces/wallet.h \
@@ -227,9 +223,7 @@ libbitcoin_server_a_SOURCES = \
   httprpc.cpp \
   httpserver.cpp \
   init.cpp \
-  instantx.cpp \
   dbwrapper.cpp \
-  governance.cpp \
   masternode.cpp \
   merkleblock.cpp \
   miner.cpp \
@@ -243,7 +237,6 @@ libbitcoin_server_a_SOURCES = \
   rest.cpp \
   rpc/blockchain.cpp \
   rpc/masternode.cpp \
-  rpc/governance.cpp \
   rpc/mining.cpp \
   rpc/misc.cpp \
   rpc/net.cpp \

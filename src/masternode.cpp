@@ -1,4 +1,5 @@
 // Copyright (c) 2014-2017 The Dash Core developers
+// Copyright (c) 2021-2025 Uladzimir (t.me/vovanchik_net)
 // Distributed under the MIT/X11 software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
@@ -10,7 +11,6 @@
 #include <init.h>
 #include <netbase.h>
 #include <net_processing.h>
-#include <governance.h>
 #include <script/standard.h>
 #ifdef ENABLE_WALLET
 #include "wallet/wallet.h"
@@ -36,8 +36,6 @@
 #include <hash.h>
 #include <validation.h>
 #include <tinyformat.h>
-
-#include <instantx.h>
 
 std::string script2addr (const CScript& script) {
     std::string ret = "";
@@ -346,9 +344,6 @@ void CMasternode::Dump (const std::string& border, std::function<void(std::strin
     dumpfunc(border + "    _nLastDsq = " + itostr(nLastDsq));
     dumpfunc(border + "    _nPoSeBanScore = " + itostr(nPoSeBanScore));
     dumpfunc(border + "    _nPoSeBanHeight = " + itostr(nPoSeBanHeight));
-    dumpfunc(border + "    _mapGovernanceObjectsVotedOn:");
-    for (const auto& item : mapGovernanceObjectsVotedOn)
-        dumpfunc(border + "        " + HexStr(item.first) + " - " + itostr(item.second));
     dumpfunc(border + "}");
 }
 
@@ -858,45 +853,6 @@ void CMasternodePing::Relay(CConnman& connman)
     connman.ForEachNode([&inv](CNode* pnode) {
         pnode->PushInventory(inv);
     });
-}
-
-void CMasternode::AddGovernanceVote(uint256 nGovernanceObjectHash)
-{
-    if(mapGovernanceObjectsVotedOn.count(nGovernanceObjectHash)) {
-        mapGovernanceObjectsVotedOn[nGovernanceObjectHash]++;
-    } else {
-        mapGovernanceObjectsVotedOn.insert(std::make_pair(nGovernanceObjectHash, 1));
-    }
-}
-
-void CMasternode::RemoveGovernanceObject(uint256 nGovernanceObjectHash)
-{
-    std::map<uint256, int>::iterator it = mapGovernanceObjectsVotedOn.find(nGovernanceObjectHash);
-    if(it == mapGovernanceObjectsVotedOn.end()) {
-        return;
-    }
-    mapGovernanceObjectsVotedOn.erase(it);
-}
-
-/**
-*   FLAG GOVERNANCE ITEMS AS DIRTY
-*
-*   - When masternode come and go on the network, we must flag the items they voted on to recalc it's cached flags
-*
-*/
-void CMasternode::FlagGovernanceItemsAsDirty()
-{
-    std::vector<uint256> vecDirty;
-    {
-        std::map<uint256, int>::iterator it = mapGovernanceObjectsVotedOn.begin();
-        while(it != mapGovernanceObjectsVotedOn.end()) {
-            vecDirty.push_back(it->first);
-            ++it;
-        }
-    }
-    for(size_t i = 0; i < vecDirty.size(); ++i) {
-        mnodeman.AddDirtyGovernanceObjectHash(vecDirty[i]);
-    }
 }
 
 // masternode-payments
@@ -1893,12 +1849,6 @@ void CMasternodeSync::ProcessTick(CConnman& connman)
 
     // gradually request the rest of the votes after sync finished
     if(IsSynced()) {
-        std::vector<CNode*> vNodesCopy = connman.CopyNodeVector();
-        for (auto& pnode : vNodesCopy) {
-            if (pnode && pnode->fSuccessfullyConnected && !pnode->fDisconnect)
-                governance.RequestGovernanceObjectVotes(pnode, connman);
-        }
-        connman.ReleaseNodeVector(vNodesCopy);
         return;
     }
 
@@ -2039,74 +1989,14 @@ void CMasternodeSync::ProcessTick(CConnman& connman)
             // GOVOBJ : SYNC GOVERNANCE ITEMS FROM OUR PEERS
 
             if(nRequestedMasternodeAssets == MASTERNODE_SYNC_GOVERNANCE) {
-                LogPrint(BCLog::MN, "CMasternodeSync::ProcessTick -- nTick %d nRequestedMasternodeAssets %d nTimeLastBumped %lld GetTime() %lld diff %lld\n", nTick, nRequestedMasternodeAssets, nTimeLastBumped, GetTime(), GetTime() - nTimeLastBumped);
-
-                // check for timeout first
-                if(GetTime() - nTimeLastBumped > MASTERNODE_SYNC_TIMEOUT_SECONDS) {
-                    LogPrintf("CMasternodeSync::ProcessTick -- nTick %d nRequestedMasternodeAssets %d -- timeout\n", nTick, nRequestedMasternodeAssets);
-                    if(nRequestedMasternodeAttempt == 0) {
-                        LogPrintf("CMasternodeSync::ProcessTick -- WARNING: failed to sync %s\n", GetAssetName());
-                        // it's kind of ok to skip this for now, hopefully we'll catch up later?
-                    }
-                    SwitchToNextAsset(connman);
-                    connman.ReleaseNodeVector(vNodesCopy);
-                    return;
-                }
-
-                // only request obj sync once from each peer, then request votes on per-obj basis
-                if(netfulfilledman.HasFulfilledRequest(pnode->addr, "governance-sync")) {
-                    int nObjsLeftToAsk = governance.RequestGovernanceObjectVotes(pnode, connman);
-                    static int64_t nTimeNoObjectsLeft = 0;
-                    // check for data
-                    if(nObjsLeftToAsk == 0) {
-                        static int nLastTick = 0;
-                        static int nLastVotes = 0;
-                        if(nTimeNoObjectsLeft == 0) {
-                            // asked all objects for votes for the first time
-                            nTimeNoObjectsLeft = GetTime();
-                        }
-                        // make sure the condition below is checked only once per tick
-                        if(nLastTick == nTick) continue;
-                        if(GetTime() - nTimeNoObjectsLeft > MASTERNODE_SYNC_TIMEOUT_SECONDS &&
-                            governance.GetVoteCount() - nLastVotes < std::max(int(0.0001 * nLastVotes), MASTERNODE_SYNC_TICK_SECONDS)
-                        ) {
-                            // We already asked for all objects, waited for MASTERNODE_SYNC_TIMEOUT_SECONDS
-                            // after that and less then 0.01% or MASTERNODE_SYNC_TICK_SECONDS
-                            // (i.e. 1 per second) votes were recieved during the last tick.
-                            // We can be pretty sure that we are done syncing.
-                            LogPrintf("CMasternodeSync::ProcessTick -- nTick %d nRequestedMasternodeAssets %d -- asked for all objects, nothing to do\n", nTick, nRequestedMasternodeAssets);
-                            // reset nTimeNoObjectsLeft to be able to use the same condition on resync
-                            nTimeNoObjectsLeft = 0;
-                            SwitchToNextAsset(connman);
-                            connman.ReleaseNodeVector(vNodesCopy);
-                            return;
-                        }
-                        nLastTick = nTick;
-                        nLastVotes = governance.GetVoteCount();
-                    }
-                    continue;
-                }
-                netfulfilledman.AddFulfilledRequest(pnode->addr, "governance-sync");
-
-                nRequestedMasternodeAttempt++;
-
-                SendGovernanceSyncRequest(pnode, connman);
-
+                SwitchToNextAsset(connman);
                 connman.ReleaseNodeVector(vNodesCopy);
-                return; //this will cause each peer to get one request each six seconds for the various assets we need
+                return;
             }
         }
     }
     // looped through all nodes, release them
     connman.ReleaseNodeVector(vNodesCopy);
-}
-
-void CMasternodeSync::SendGovernanceSyncRequest(CNode* pnode, CConnman& connman)
-{
-    CNetMsgMaker msgMaker(pnode->GetSendVersion());
-    CBloomFilter filter;
-    filter.clear();
-    connman.PushMessage(pnode, msgMaker.Make(NetMsgType::MNGOVERNANCESYNC, uint256(), filter));
 }
 
 void CMasternodeSync::NotifyHeaderTip(const CBlockIndex *pindexNew, bool fInitialDownload, CConnman& connman)
@@ -2217,7 +2107,6 @@ CMasternodeMan::CMasternodeMan():
     listScheduledMnbRequestConnections(),
     fMasternodesAdded(false),
     fMasternodesRemoved(false),
-    vecDirtyGovernanceObjectHashes(),
     nLastSentinelPingTime(0),
     mapSeenMasternodeBroadcast(),
     mapSeenMasternodePing(),
@@ -2348,7 +2237,6 @@ void CMasternodeMan::CheckAndRemove(CConnman& connman)
                 mWeAskedForMasternodeListEntry.erase(it->first);
 
                 // and finally remove it from the list
-                it->second.FlagGovernanceItemsAsDirty();
                 mapMasternodes.erase(it++);
                 fMasternodesRemoved = true;
             } else {
@@ -3708,25 +3596,6 @@ bool CMasternodeMan::IsSentinelPingActive()
     return (GetTime() - nLastSentinelPingTime) <= MASTERNODE_SENTINEL_PING_MAX_SECONDS;
 }
 
-bool CMasternodeMan::AddGovernanceVote(const COutPoint& outpoint, uint256 nGovernanceObjectHash)
-{
-    LOCK(cs);
-    CMasternode* pmn = Find(outpoint);
-    if(!pmn) {
-        return false;
-    }
-    pmn->AddGovernanceVote(nGovernanceObjectHash);
-    return true;
-}
-
-void CMasternodeMan::RemoveGovernanceObject(uint256 nGovernanceObjectHash)
-{
-    LOCK(cs);
-    for(auto& mnpair : mapMasternodes) {
-        mnpair.second.RemoveGovernanceObject(nGovernanceObjectHash);
-    }
-}
-
 void CMasternodeMan::CheckMasternode(const CPubKey& pubKeyMasternode, bool fForce)
 {
     LOCK2(cs_main, cs);
@@ -3833,14 +3702,6 @@ void CMasternodeMan::NotifyMasternodeUpdates(CConnman& connman)
         LOCK(cs);
         fMasternodesAddedLocal = fMasternodesAdded;
         fMasternodesRemovedLocal = fMasternodesRemoved;
-    }
-
-    if(fMasternodesAddedLocal) {
-        governance.CheckMasternodeOrphanObjects(connman);
-        governance.CheckMasternodeOrphanVotes(connman);
-    }
-    if(fMasternodesRemovedLocal) {
-        governance.UpdateCachesAndClean();
     }
 
     LOCK(cs);
@@ -4029,20 +3890,16 @@ void load_mn_dat () {
                 } else {
                     ssObj >> mnodeman;
                     ssObj >> mnpayments;
-                    ssObj >> governance;
-                    governance.InitOnLoad();
                 }
             }
             catch (std::exception &e) {
                 mnodeman.Clear();
                 mnpayments.Clear();
-                governance.Clear();
                 LogPrintf("masternode.dat: Serialize or I/O error - %s\n", e.what());
             }
             catch (...) {
                 mnodeman.Clear();
                 mnpayments.Clear();
-                governance.Clear();
                 LogPrintf("masternode.dat: Serialize or I/O error\n");
             }
         }
@@ -4053,7 +3910,7 @@ void load_mn_dat () {
 void save_mn_dat () {
     int64_t nStart = GetTimeMillis();
     CDataStream ssObj(SER_DISK, CLIENT_VERSION);
-    ssObj << Params().MessageStart() << mnodeman << mnpayments << governance;
+    ssObj << Params().MessageStart() << mnodeman << mnpayments;
     uint256 hash = Hash(ssObj.begin(), ssObj.end());
     ssObj << hash;
     fs::path pathDB = GetDataDir() / "masternode.dat";
@@ -4446,7 +4303,6 @@ void CDSNotificationInterface::UpdatedBlockTip(const CBlockIndex *pindexNew, con
     }
 
     mnodeman.UpdatedBlockTip(pindexNew);
-    instantsend.UpdatedBlockTip(pindexNew);
     mnpayments.UpdatedBlockTip(pindexNew, connman);
     votes.UpdatedBlockTip (pindexNew);
 }
@@ -4454,7 +4310,6 @@ void CDSNotificationInterface::UpdatedBlockTip(const CBlockIndex *pindexNew, con
 void CDSNotificationInterface::BlockConnected (const std::shared_ptr<const CBlock> &pblock, const CBlockIndex *pindex,
     const std::vector<CTransactionRef> &vtxConflicted)
 {
-    if (fEnableInstantSend) instantsend.BlockConnected(pblock, pindex);
     votes.BlockConnected(pblock, pindex);
 }
 
@@ -4538,8 +4393,6 @@ void CVotes::add (const uint256& hash, CVote& vote) {
 }
 
 void CVotes::UpdatedBlockTip (const CBlockIndex *pindex) {
-    if (IsInitialBlockDownload()) return;
-
     int height = pindex ? pindex->nHeight : chainActive.Height();
     {
         LOCK (cs);

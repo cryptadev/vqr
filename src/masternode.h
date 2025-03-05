@@ -1,4 +1,5 @@
 // Copyright (c) 2014-2017 The Dash Core developers
+// Copyright (c) 2023-2025 Uladzimir (t.me/vovanchik_net)
 // Distributed under the MIT/X11 software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
@@ -178,9 +179,6 @@ public:
     bool fAllowMixingTx{};
     bool fUnitTest = false;
 
-    // KEEP TRACK OF GOVERNANCE ITEMS EACH MASTERNODE HAS VOTE UPON FOR RECALCULATION
-    std::map<uint256, int> mapGovernanceObjectsVotedOn;
-
     CMasternode();
     CMasternode(const CMasternode& other);
     CMasternode(const CMasternodeBroadcast& mnb);
@@ -209,7 +207,6 @@ public:
         READWRITE(nPoSeBanHeight);
         READWRITE(fAllowMixingTx);
         READWRITE(fUnitTest);
-        READWRITE(mapGovernanceObjectsVotedOn);
     }
 
     // CALCULATE A RANK AGAINST OF GIVEN BLOCK
@@ -277,13 +274,6 @@ public:
     int GetLastPaidBlock() const { return nBlockLastPaid; }
     CScript GetPayScript () const { return GetScriptForDestination(pubKeyCollateralAddress.GetID()); }
 
-    // KEEP TRACK OF EACH GOVERNANCE ITEM INCASE THIS NODE GOES OFFLINE, SO WE CAN RECALC THEIR STATUS
-    void AddGovernanceVote(uint256 nGovernanceObjectHash);
-    // RECALCULATE CACHED STATUS FLAGS FOR ALL AFFECTED OBJECTS
-    void FlagGovernanceItemsAsDirty();
-
-    void RemoveGovernanceObject(uint256 nGovernanceObjectHash);
-
     CMasternode& operator=(CMasternode const& from) {
         static_cast<CMasternodeBase&>(*this)=from;
         lastPing = from.lastPing;
@@ -294,7 +284,6 @@ public:
         nPoSeBanHeight = from.nPoSeBanHeight;
         fAllowMixingTx = from.fAllowMixingTx;
         fUnitTest = from.fUnitTest;
-        mapGovernanceObjectsVotedOn = from.mapGovernanceObjectsVotedOn;
         return *this;
     }
     void Dump (const std::string& border, std::function<void(std::string)> dumpfunc);
@@ -646,8 +635,6 @@ private:
 public:
     CMasternodeSync() { Reset(); }
 
-    void SendGovernanceSyncRequest(CNode* pnode, CConnman& connman);
-
     bool IsFailed() { return nRequestedMasternodeAssets == MASTERNODE_SYNC_FAILED; }
     bool IsBlockchainSynced() { return nRequestedMasternodeAssets > MASTERNODE_SYNC_WAITING; }
     bool IsMasternodeListSynced() { return nRequestedMasternodeAssets > MASTERNODE_SYNC_LIST; }
@@ -730,8 +717,6 @@ private:
 
     /// Set when masternodes are removed, cleared when CGovernanceManager is notified
     bool fMasternodesRemoved;
-
-    std::vector<uint256> vecDirtyGovernanceObjectHashes;
 
     int64_t nLastSentinelPingTime;
 
@@ -877,22 +862,8 @@ public:
     bool CheckMnbAndUpdateMasternodeList(CNode* pfrom, CMasternodeBroadcast mnb, int& nDos, CConnman& connman);
     bool IsMnbRecoveryRequested(const uint256& hash) { return mMnbRecoveryRequests.count(hash); }
 
-    void AddDirtyGovernanceObjectHash(const uint256& nHash) {
-        LOCK(cs);
-        vecDirtyGovernanceObjectHashes.push_back(nHash);
-    }
-
-    std::vector<uint256> GetAndClearDirtyGovernanceObjectHashes() {
-        LOCK(cs);
-        std::vector<uint256> vecTmp = vecDirtyGovernanceObjectHashes;
-        vecDirtyGovernanceObjectHashes.clear();
-        return vecTmp;;
-    }
-
     bool IsSentinelPingActive();
     void UpdateLastSentinelPingTime();
-    bool AddGovernanceVote(const COutPoint& outpoint, uint256 nGovernanceObjectHash);
-    void RemoveGovernanceObject(uint256 nGovernanceObjectHash);
 
     void CheckMasternode(const CPubKey& pubKeyMasternode, bool fForce);
 

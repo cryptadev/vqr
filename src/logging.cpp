@@ -121,7 +121,6 @@ const CLogCategoryDesc LogCategories[] =
     {BCLog::LEVELDB, "leveldb"},
     {BCLog::NETDUMP, "netdump"},
     {BCLog::MN, "masternode"},
-    {BCLog::IS, "instasend"},
     {BCLog::ALL, "1"},
     {BCLog::ALL, "all"},
 };

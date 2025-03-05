@@ -1,6 +1,6 @@
 // Copyright (c) 2009-2010 Satoshi Nakamoto
 // Copyright (c) 2009-2018 The Bitcoin Core developers
-// Copyright (c) 2023 Uladzimir (t.me/cryptadev)
+// Copyright (c) 2021-2025 Uladzimir (t.me/vovanchik_net)
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
@@ -17,9 +17,11 @@
 #include <httpserver.h>
 #include <rpc/blockchain.h>
 #include <rpc/server.h>
+#include <shutdown.h>
 #include <streams.h>
 #include <sync.h>
 #include <txmempool.h>
+#include <utilmoneystr.h>
 #include <utilstrencodings.h>
 #include <version.h>
 #include <policy/policy.h>
@@ -599,7 +601,7 @@ static const struct {
 static bool API_ERROR (HTTPRequest* req, std::string message) {
     UniValue root (UniValue::VOBJ);
     root.pushKV("status", "error");
-    root.pushKV("errmsg", message);
+    root.pushKV("error", message);
     std::string strJSON = root.write() + "\n";
     req->WriteHeader("Content-Type", "application/json");
     req->WriteReply(HTTP_OK, strJSON);
@@ -832,28 +834,21 @@ std::string getHeaderData (UniValue& obj, const CBlockIndex* pi, bool full_tx) {
 
 bool api_header (HTTPRequest* req, const std::string& strURIPart) {
     if (!CheckWarmup(req)) return false;
+    int hei = chainActive.Height();
+    std::vector<std::string> suri;
+    boost::split (suri, strURIPart, boost::is_any_of("/"));
+    std::string index = (suri.size() > 0) ? suri[0] : "";
+    int count = (suri.size() > 1) ? atoi64(suri[1]) : 100;
+    count = (count > 2000) ? 2000 : ((count < 20) ? 20 : count);
+    uint32_t nn = hei - count + 1;
     const CBlockIndex* pi = NULL;
-    int count = 20;
-    const std::string::size_type pos = strURIPart.rfind('_');
-    std::string s1;
-    uint32_t nn;
-    if (pos == std::string::npos) { s1 = strURIPart; } else {
-        s1 = strURIPart.substr(0, pos);
-        if (s1 == "") return API_ERROR (req, "header hash is null");
-        std::string s2 = strURIPart.substr(pos + 1);
-        if (ParseUInt32(s2, &nn) && (nn < 599)) { count = nn; } else
-            return API_ERROR (req, "header count is invalid (" + strURIPart + ")");        
-    }
-    if (ParseUInt32(s1, &nn)) {
+    if ((index == "") || ParseUInt32(index, &nn)) {
         pi = chainActive[nn];
         if (!pi) return API_ERROR (req, "header index " + strURIPart + " not found");
-    } else if (IsHex(s1)) {
+    } else if (IsHex(index)) {
         uint256 hash;
-        hash.SetHex(s1);
+        hash.SetHex(index);
         pi = LookupBlockIndex(hash);
-        if (!pi) return API_ERROR (req, "header hash " + strURIPart + " not found");
-    } else if (s1 == "") {
-        pi = chainActive[chainActive.Height() <= count ? 0 : chainActive.Height() - count];
         if (!pi) return API_ERROR (req, "header hash " + strURIPart + " not found");
     } else return API_ERROR (req, "params " + strURIPart + " is invalid");
     UniValue root (UniValue::VOBJ);
@@ -862,9 +857,10 @@ bool api_header (HTTPRequest* req, const std::string& strURIPart) {
         std::string ret = getHeaderData (obj, pi, false);
         if (ret != "") return API_ERROR (req, strprintf("[%d]: %s", pi->nHeight, ret));
         root.pushKV(strprintf("%d", pi->nHeight), obj);
-        if (count-- <= 0) break;
+        if (--count <= 0) break;
         pi = chainActive.Next(pi);
     }
+    root.pushKV("height", (int64_t)hei);
     return API_OK (req, root);
 }
 
@@ -922,51 +918,41 @@ bool api_tx (HTTPRequest* req, const std::string& strURIPart) {
 
 bool api_address (HTTPRequest* req, const std::string& strURIPart) {
     if (!CheckWarmup(req)) return false;
-    int index = 0;
-    const std::string::size_type pos = strURIPart.rfind('_');
-    std::string sss;
-    if (pos == std::string::npos) { sss = strURIPart; } else {
-        sss = strURIPart.substr(0, pos);
-        if (sss == "") return API_ERROR (req, "address is null");
-        uint32_t nn = 0;
-        std::string s2 = strURIPart.substr(pos + 1);
-        if (ParseUInt32(s2, &nn) && (nn < 9999)) { index = nn; } else
-            return API_ERROR (req, "address count " + strURIPart + " is invalid");
-    }
-    if (!IsValidDestination(DecodeDestination(sss))) 
+    std::vector<std::string> suri;
+    boost::split (suri, strURIPart, boost::is_any_of("/"));
+    CAddressInfo info; 
+    std::string addr = (suri.size() > 0) ? suri[0] : "";
+    int index = (suri.size() > 1) ? atoi64(suri[1]) : 0;
+    index = (index > 9999999) ? 9999999 : ((index < 0) ? 0 : index);
+    int count = (suri.size() > 2) ? atoi64(suri[2]) : 1000;
+    info.total_max = ((suri.size() > 3) && (suri[3] == "max")) ? -1 : 10000;
+    if (!IsValidDestination(DecodeDestination(addr)))
         return API_ERROR (req, "address " + strURIPart + " is invalid");
-    AddressInfo info; 
-    if (req->GetURI().find("/api/fulladdress/") == std::string::npos) info.total_max = 5000;
-    if (!GetAddressInfo(GetScriptForDestination(DecodeDestination(sss)), info))
+    CScript saddr = GetScriptForDestination(DecodeDestination(addr)); 
+    if (!GetAddressInfo(saddr, info))
         return API_ERROR (req, "address " + strURIPart + " not found");
     UniValue coins(UniValue::VARR);
-    int total_pos = 0; index *= 200;
+    int total_pos = 0;
     bool only_unspent = req->GetURI().find("/api/unspent/") != std::string::npos;
     for (auto& it : info.data) {
-        bool isspent = it.second.spend_height != 0;
-        if (only_unspent && isspent) continue;
-        if (only_unspent && it.second.iscoinbase && (chainActive.Height() - it.second.height < COINBASE_MATURITY)) continue;
-        UniValue output(UniValue::VOBJ);
-        output.pushKV("value", ValueFromAmount(it.second.value));
-        output.pushKV("tx_hash", it.first.out.hash.GetHex());
-        output.pushKV("tx_out", (int64_t)it.first.out.n);
-        output.pushKV("height", (int64_t)it.second.height);
-        const CBlockIndex* pi = chainActive[it.second.height];
-        if (pi) output.pushKV("time", pi->GetBlockTime());
-        output.pushKV("script", HexStr(it.first.script.begin(), it.first.script.end()));
-        if (isspent) {
-            output.pushKV("spent_tx_hash", it.second.spend_hash.GetHex());
-            output.pushKV("spent_tx_out", (int64_t)it.second.spend_n);
-            output.pushKV("spent_height", (int64_t)it.second.spend_height);
-            const CBlockIndex* pi = chainActive[it.second.spend_height];
-            if (pi) output.pushKV("spent_time", pi->GetBlockTime());
-        }
+        if (only_unspent && (it.state != CAddressInfoState::RECEIVE)) continue;
         total_pos++;
-        if ((index <= total_pos) && (total_pos < index + 200)) coins.push_back(output);
-        if (total_pos > index + 200) break;
+        if (total_pos < index) continue;
+        if (total_pos >= index + count) break;
+        UniValue output(UniValue::VOBJ);
+        if (saddr != it.script) output.pushKV("script", HexStr(it.script.begin(), it.script.end()));
+        output.pushKV("value", ValueFromAmount(it.value));
+        output.pushKV("height", (int64_t)it.height);
+        output.pushKV("tx_hash", it.tx_hash.GetHex());
+        output.pushKV("tx_out", (int64_t)it.tx_out);
+        output.pushKV("state", (it.state == CAddressInfoState::SEND) ? "send" : (
+                               (it.state == CAddressInfoState::SPEND) ? "spent" : (
+                               (it.state == CAddressInfoState::MATURE) ? "mature" : "receive")));
+        coins.push_back(output);
     }
     UniValue objTx(UniValue::VOBJ);
-    objTx.pushKV("address", sss);
+    objTx.pushKV("address", addr);
+    objTx.pushKV("script", HexStr(saddr.begin(), saddr.end()));
     objTx.pushKV("value", ValueFromAmount(info.receive_amount - info.send_amount));
     if (!only_unspent) {
         objTx.pushKV("receive_count", info.total_in);
@@ -977,9 +963,61 @@ bool api_address (HTTPRequest* req, const std::string& strURIPart) {
     objTx.pushKV("offset", index);
     objTx.pushKV("count", info.total_in + 
         ((info.total_max > 0) && (info.total_out > info.total_max) ? info.total_max : info.total_out));
-    objTx.pushKV("height", (int64_t)chainActive.Height());
+    objTx.pushKV("height", (int64_t)info.height);
     objTx.pushKV("coins", coins);
     return API_OK (req, objTx);
+}
+
+bool api_richlist (HTTPRequest* req, const std::string& strURIPart) {
+    if (!CheckWarmup(req)) return false;
+
+    std::unique_ptr<CCoinsViewCursor> pcursor;
+    int hei;
+    {
+        LOCK(cs_main);
+        FlushStateToDisk();
+        pcursor = std::unique_ptr<CCoinsViewCursor>(pcoinsdbview->Cursor());
+        hei = chainActive.Height();
+    }
+
+    std::map<CScript, CAmount> balmap;
+    CAmount total = 0;
+    while (pcursor->Valid()) {
+        COutPoint key;
+        Coin coin;
+        if (pcursor->GetKey(key) && pcursor->GetValue(coin) && (!coin.IsSpent())) {
+            total += coin.out.nValue;
+            balmap[coin.out.scriptPubKey] += coin.out.nValue;
+        }
+        pcursor->Next();
+        if (ShutdownRequested()) break;
+    }
+    std::vector<std::pair<CScript, CAmount>> balvec;
+    balvec.reserve(balmap.size());
+    for (const auto& item : balmap)
+        if (item.second > 10*COIN)
+            balvec.push_back (std::make_pair(item.first, item.second));
+    std::sort (balvec.begin(), balvec.end(),
+        [](const std::pair<CScript, CAmount> &l, const std::pair<CScript, CAmount> &r) { return l.second > r.second; });
+    int index = 1;
+    UniValue arr (UniValue::VARR);
+    for (const auto& item : balvec) {
+        UniValue val(UniValue::VOBJ);
+        CTxDestination addr;
+        if (ExtractDestination(item.first, addr)) {
+            val.pushKV("address", EncodeDestination(addr));
+        } else {
+            val.pushKV("address", HexStr(item.first.begin(), item.first.end()));
+        }
+        val.pushKV("value", FormatMoney(item.second));
+        arr.push_back(val);
+        if (++index > 255) break;
+    }
+    UniValue ret (UniValue::VOBJ);
+    ret.pushKV("balance", total);
+    ret.pushKV("rich", arr);
+    ret.pushKV("height", hei);
+    return API_OK (req, ret);
 }
 
 bool api_send (HTTPRequest* req, const std::string& strURIPart) {
@@ -1047,9 +1085,9 @@ static const struct {
       {"/api/header/", api_header},     // start_hash, start_hash/num_header, start_index, start_index/num_header
       {"/api/block/", api_block},       // hash, index
       {"/api/tx/", api_tx},             // hash
-      {"/api/fulladdress/", api_address},   // address
       {"/api/address/", api_address},   // address
       {"/api/unspent/", api_address},   // unspent
+      {"/api/richlist", api_richlist}, // richlist
       {"/api/send/", api_send},         // TX HEX
 };
 
