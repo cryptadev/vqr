@@ -1110,8 +1110,7 @@ protected:
     // CValidationInterface
     void NotifyHeaderTip(const CBlockIndex *pindexNew, bool fInitialDownload) override;
     void UpdatedBlockTip(const CBlockIndex *pindexNew, const CBlockIndex *pindexFork, bool fInitialDownload) override;
-    void BlockConnected(const std::shared_ptr<const CBlock> &pblock, const CBlockIndex *pindex, 
-        const std::vector<CTransactionRef> &vtxConflicted) override;
+    void BlockConnected(const std::shared_ptr<const CBlock> &pblock, const CBlockIndex *pindex) override;
 
 private:
     CConnman& connman;

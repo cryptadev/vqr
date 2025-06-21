@@ -1,6 +1,5 @@
 // Copyright (c) 2009-2010 Satoshi Nakamoto
 // Copyright (c) 2009-2018 The Bitcoin Core developers
-// Copyright (c) 2023 Uladzimir (t.me/cryptadev)
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
@@ -311,88 +310,5 @@ void AddCoins(CCoinsViewCache& cache, const CTransaction& tx, int nHeight, bool 
 // which is not found in the cache, it can cause up to MAX_OUTPUTS_PER_BLOCK
 // lookups to database, so it should be used with care.
 const Coin& AccessByTxid(const CCoinsViewCache& cache, const uint256& txid);
-
-class CAddressKey {
-public:
-    CScript script;
-    COutPoint out;
-
-    CAddressKey() : script(), out() { }
-
-    CAddressKey(const CScript& ascript, const COutPoint& aout);
-
-    CAddressKey(const CAddressKey &pp) {
-        script = pp.script;
-        out = pp.out;
-    }
-
-    ADD_SERIALIZE_METHODS;
-
-    template <typename Stream, typename Operation>
-    inline void SerializationOp(Stream& s, Operation ser_action) {
-        READWRITE(script);
-        READWRITE(out.hash);
-        READWRITE(VARINT(out.n));
-    }
-
-    friend bool operator<(const CAddressKey& a, const CAddressKey& b) {
-        return a.out < b.out;
-    }
-
-    friend bool operator==(const CAddressKey& a, const CAddressKey& b) {
-        return (a.script == b.script) && (a.out == b.out);
-    }
-
-    friend bool operator!=(const CAddressKey& a, const CAddressKey& b) {
-        return !(a == b);
-    }
-
-    std::string GetAddr () const;
-};
-
-class CAddressValue {
-public:
-    CAmount value;
-    uint32_t height;
-    bool iscoinbase;
-    uint32_t spend_height;
-    uint256 spend_hash;
-    uint32_t spend_n;
-
-    CAddressValue() : value(0), height(0), iscoinbase(false), spend_height(0), spend_hash(), spend_n(0) { }
-
-    CAddressValue(CAmount avalue, uint32_t aheight, bool aiscoinbase, uint32_t aspend_height = 0,
-                const uint256& aspend_hash = uint256(), uint32_t aspend_n = 0) {
-        value = avalue;
-        height = aheight;
-        iscoinbase = aiscoinbase;
-        spend_height = aspend_height;
-        spend_hash = aspend_hash;
-        spend_n = aspend_n;
-    }
-
-    CAddressValue(const CAddressValue &pp) {
-        value = pp.value;
-        height = pp.height;
-        iscoinbase = pp.iscoinbase;
-        spend_height = pp.spend_height;
-        spend_hash = pp.spend_hash;
-        spend_n = pp.spend_n;
-    }
-
-    ADD_SERIALIZE_METHODS;
-
-    template <typename Stream, typename Operation>
-    inline void SerializationOp(Stream& s, Operation ser_action) {
-        READWRITE(value);
-        READWRITE(VARINT(height));
-        READWRITE(iscoinbase);
-        READWRITE(VARINT(spend_height));
-        if (spend_height > 0) {
-            READWRITE(spend_hash);
-            READWRITE(VARINT(spend_n));
-        }
-    }
-};
 
 #endif // BITCOIN_COINS_H

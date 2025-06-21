@@ -20,6 +20,7 @@
 #include <fs.h>
 #include <httpserver.h>
 #include <httprpc.h>
+#include <index/txindex.h>
 #include <key.h>
 #include <key_io.h>
 #include <validation.h>
@@ -182,6 +183,9 @@ void Interrupt()
     InterruptMapPort();
     if (g_connman)
         g_connman->Interrupt();
+    if (g_txindex) {
+        g_txindex->Interrupt();
+    }
 }
 
 void Shutdown()
@@ -210,6 +214,7 @@ void Shutdown()
     // using the other before destroying them.
     if (peerLogic) UnregisterValidationInterface(peerLogic.get());
     if (g_connman) g_connman->Stop();
+    if (g_txindex) g_txindex->Stop();
 
     StopTorControl();
 
@@ -224,6 +229,7 @@ void Shutdown()
     // destruct and reset all to nullptr.
     peerLogic.reset();
     g_connman.reset();
+    g_txindex.reset();
 
     if (g_is_mempool_loaded && gArgs.GetArg("-persistmempool", DEFAULT_PERSIST_MEMPOOL)) {
         DumpMempool();
@@ -253,8 +259,6 @@ void Shutdown()
         pcoinscatcher.reset();
         pcoinsdbview.reset();
         pblocktree.reset();
-        if (fTxIndex) pblocktxindex.reset();
-        if (fAddressIndex) pblockaddressindex.reset();
     }
     g_wallet_init_interface.Stop();
 
@@ -390,7 +394,6 @@ void SetupServerArgs()
     hidden_args.emplace_back("-sysperms");
 #endif
     gArgs.AddArg("-txindex", strprintf("Maintain a full transaction index, used by the getrawtransaction rpc call (default: %u)", DEFAULT_TXINDEX), false, OptionsCategory::OPTIONS);
-    gArgs.AddArg("-addressindex", strprintf("Maintain a full address index, used by the getaddressbalance rpc call (default: %u)", false), false, OptionsCategory::OPTIONS);
 
     gArgs.AddArg("-gen", "PoW generate enable", false, OptionsCategory::OPTIONS);
     gArgs.AddArg("-stakegen", "PoS generate enable", false, OptionsCategory::OPTIONS);
@@ -709,53 +712,6 @@ static void ThreadImport(std::vector<fs::path> vImportFiles)
         LoadMempool();
     }
     g_is_mempool_loaded = !ShutdownRequested();
-}
-
-static void ThreadCheckMN (CConnman& connman) {
-    static bool fOneThread;
-    if(fOneThread) return;
-    fOneThread = true;
-
-    RenameThread("mn");
-
-    unsigned int nTick = 0;
-
-    while (true) {
-        MilliSleep(1000);
-        try {
-            // try to sync from all available nodes, one step at a time
-            masternodeSync.ProcessTick(connman);
-            if (masternodeSync.IsBlockchainSynced() && !ShutdownRequested()) {
-                nTick++;
-                // make sure to check all masternodes first
-                if (nTick % 5 == 0) mnodeman.Check();
-                mnodeman.ProcessPendingMnbRequests(connman);
-                mnodeman.ProcessPendingMnvRequests(connman);
-                // check if we should activate or ping every few minutes,
-                // slightly postpone first run to give net thread a chance to connect to some peers
-                if(nTick % MASTERNODE_MIN_MNP_SECONDS == 15) {        // 10 минут
-                    activeMasternode.ManageState(connman);
-                    save_mn_dat ();
-                }
-                if(nTick % 60 == 0) {                               // 1 минута
-                    netfulfilledman.CheckAndRemove();
-                    mnodeman.ProcessMasternodeConnections(connman);
-                    mnodeman.CheckAndRemove(connman);
-                    mnodeman.WarnMasternodeDaemonUpdates();
-                    mnpayments.CheckAndRemove();
-                }
-                if(fMasternodeMode && (nTick % (60 * 5) == 0)) {     // 5 минут
-                    mnodeman.DoFullVerificationStep(connman);
-                }
-            }
-        }
-        catch (std::exception &e) {
-            LogPrintf("mn: I/O error - %s\n", e.what());
-        }
-        catch (...) {
-            LogPrintf("mn: I/O error\n");
-        }
-    }
 }
 
 /** Sanity checks
@@ -1466,8 +1422,10 @@ bool AppInitMain()
     int64_t nTotalCache = (gArgs.GetArg("-dbcache", nDefaultDbCache) << 20);
     nTotalCache = std::max(nTotalCache, nMinDbCache << 20); // total cache cannot be less than nMinDbCache
     nTotalCache = std::min(nTotalCache, nMaxDbCache << 20); // total cache cannot be greater than nMaxDbcache
-    int64_t nBlockTreeDBCache = std::min(nTotalCache / 8, (gArgs.GetBoolArg("-txindex", DEFAULT_TXINDEX) ? nMaxTxIndexCache : nMaxBlockDBCache) << 20);
+    int64_t nBlockTreeDBCache = std::min(nTotalCache / 8, nMaxBlockDBCache << 20);
     nTotalCache -= nBlockTreeDBCache;
+    int64_t nTxIndexCache = std::min(nTotalCache / 8, gArgs.GetBoolArg("-txindex", DEFAULT_TXINDEX) ? nMaxTxIndexCache << 20 : 0);
+    nTotalCache -= nTxIndexCache;
     int64_t nCoinDBCache = std::min(nTotalCache / 2, (nTotalCache / 4) + (1 << 23)); // use 25%-50% of the remainder for disk cache
     nCoinDBCache = std::min(nCoinDBCache, nMaxCoinsDBCache << 20); // cap total coins db cache
     nTotalCache -= nCoinDBCache;
@@ -1475,6 +1433,9 @@ bool AppInitMain()
     int64_t nMempoolSizeMax = gArgs.GetArg("-maxmempool", DEFAULT_MAX_MEMPOOL_SIZE) * 1000000;
     LogPrintf("Cache configuration:\n");
     LogPrintf("* Using %.1fMiB for block index database\n", nBlockTreeDBCache * (1.0 / 1024 / 1024));
+    if (gArgs.GetBoolArg("-txindex", DEFAULT_TXINDEX)) {
+        LogPrintf("* Using %.1fMiB for transaction index database\n", nTxIndexCache * (1.0 / 1024 / 1024));
+    }
     LogPrintf("* Using %.1fMiB for chain state database\n", nCoinDBCache * (1.0 / 1024 / 1024));
     LogPrintf("* Using %.1fMiB for in-memory UTXO set (plus up to %.1fMiB of unused mempool space)\n", nCoinCacheUsage * (1.0 / 1024 / 1024), nMempoolSizeMax * (1.0 / 1024 / 1024));
 
@@ -1517,55 +1478,10 @@ bool AppInitMain()
                     break;
                 }
 
-                if (fTxIndex) pblocktxindex.reset();
-                if (fTxIndex) pblocktxindex.reset(new CTxIndexDB(fReset));
-                if (fAddressIndex) pblockaddressindex.reset();
-                if (fAddressIndex) pblockaddressindex.reset(new CAddressIndexDB(fReset));
-
                 // If the loaded chain has a wrong genesis, bail out immediately
                 // (we're likely using a testnet datadir, or the other way around).
                 if (!mapBlockIndex.empty() && !LookupBlockIndex(chainparams.GetConsensus().hashGenesisBlock)) {
                     return InitError(_("Incorrect or no genesis block found. Wrong datadir for network?"));
-                }
-
-                // Check for changed -txindex state
-                if (fTxIndex != gArgs.GetBoolArg("-txindex", DEFAULT_TXINDEX)) {
-                    strLoadError = _("You need to rebuild the database using -reindex to change -txindex");
-                    if (!fReset) {
-                        bool fRet = uiInterface.ThreadSafeQuestion(
-                            strLoadError + ".\n\n" + _("Do you want to rebuild the block database now?"),
-                            strLoadError + ".\nPlease restart with -reindex or -reindex-chainstate to recover.",
-                            "", CClientUIInterface::MSG_ERROR | CClientUIInterface::BTN_ABORT);
-                        if (fRet) {
-                            fReindex = true;
-                            fReset = true;
-                            AbortShutdown();
-                            continue;
-                        } else {
-                            LogPrintf("Aborted block database rebuild. Exiting.\n");
-                            return InitError(strLoadError);
-                        }
-                    } else { fLoaded = true; break; }
-                }
-
-                // Check for changed -addressindex state
-                if (fAddressIndex != gArgs.GetBoolArg("-addressindex", false)) {
-                    strLoadError = _("You need to rebuild the database using -reindex to change -addressindex");
-                    if (!fReset) {
-                        bool fRet = uiInterface.ThreadSafeQuestion(
-                            strLoadError + ".\n\n" + _("Do you want to rebuild the block database now?"),
-                            strLoadError + ".\nPlease restart with -reindex or -reindex-chainstate to recover.",
-                            "", CClientUIInterface::MSG_ERROR | CClientUIInterface::BTN_ABORT);
-                        if (fRet) {
-                            fReindex = true;
-                            fReset = true;
-                            AbortShutdown();
-                            continue;
-                        } else {
-                            LogPrintf("Aborted block database rebuild. Exiting.\n");
-                            return InitError(strLoadError);
-                        }
-                    } else { fLoaded = true; break; }
                 }
 
                 // Check for changed -prune state.  What we are concerned about is a user who has pruned blocks
@@ -1648,7 +1564,24 @@ bool AppInitMain()
             LogPrintf(" block index %15dms\n", GetTimeMillis() - load_block_index_start_time);
         } while(false);
 
-        if (!fLoaded && !ShutdownRequested()) return InitError(strLoadError);
+        if (!fLoaded && !ShutdownRequested()) {
+            // first suggest a reindex
+            if (!fReset) {
+                bool fRet = uiInterface.ThreadSafeQuestion(
+                    strLoadError + ".\n\n" + _("Do you want to rebuild the block database now?"),
+                    strLoadError + ".\nPlease restart with -reindex or -reindex-chainstate to recover.",
+                    "", CClientUIInterface::MSG_ERROR | CClientUIInterface::BTN_ABORT);
+                if (fRet) {
+                    fReindex = true;
+                    AbortShutdown();
+                } else {
+                    LogPrintf("Aborted block database rebuild. Exiting.\n");
+                    return false;
+                }
+            } else {
+                return InitError(strLoadError);
+            }
+        }
     }
 
     // As LoadBlockIndex can take several minutes, it's possible the user
@@ -1657,6 +1590,12 @@ bool AppInitMain()
     if (ShutdownRequested()) {
         LogPrintf("Shutdown requested. Exiting.\n");
         return false;
+    }
+
+    // ********************************************************* Step 8: start indexers
+    if (gArgs.GetBoolArg("-txindex", DEFAULT_TXINDEX)) {
+        g_txindex = MakeUnique<TxIndex>(nTxIndexCache, false, fReindex);
+        g_txindex->Start();
     }
 
     // ********************************************************* Step 9: load wallet
@@ -1761,9 +1700,29 @@ bool AppInitMain()
     load_mn_dat ();
 
     pdsNotificationInterface->InitializeCurrentBlockTip();
-    
-    threadGroup.create_thread(boost::bind(&ThreadCheckMN, boost::ref(*g_connman)));
-    
+
+    scheduler.scheduleEvery([] () {       //  1 sec
+        masternodeSync.ProcessTick(*g_connman);
+        if (!masternodeSync.IsBlockchainSynced()) return;
+        mnodeman.Check();
+        mnodeman.ProcessPendingMnbRequests(*g_connman);
+        mnodeman.ProcessPendingMnvRequests(*g_connman);
+    }, 1000);
+    scheduler.scheduleEvery([] () {       //  1 min
+        if (!masternodeSync.IsBlockchainSynced()) return;
+        netfulfilledman.CheckAndRemove();
+        mnodeman.ProcessMasternodeConnections(*g_connman);
+        mnodeman.CheckAndRemove(*g_connman);
+        mnodeman.WarnMasternodeDaemonUpdates();
+        mnpayments.CheckAndRemove();
+    }, 60000);
+    scheduler.scheduleEvery([] () {       // 10 min
+        if (!masternodeSync.IsBlockchainSynced()) return;
+        mnodeman.DoFullVerificationStep(*g_connman);
+        activeMasternode.ManageState(*g_connman);
+        save_mn_dat ();
+    }, 600000);
+
     // ********************************************************* Step 12: start node
 
     int chain_active_height;
@@ -1854,7 +1813,7 @@ bool AppInitMain()
         if (gArgs.GetBoolArg("-stakegen", !fMasternodeMode/*true*/)) { generateCoin (0); }
     std::string cmt = gArgs.GetArg("-gencomment", "");
     if (cmt != "") COINBASE_FLAGS << ParseHex(cmt);
-    isStakeRepeatAddr = gArgs.GetBoolArg("-stakerepeataddr", false);
+    isStakeRepeatAddr |= gArgs.GetBoolArg("-stakerepeataddr", false);
 #endif 
 
     return true;

@@ -10,7 +10,6 @@
 #include <crypto/ripemd160.h>
 #include <key_io.h>
 #include <validation.h>
-#include <txdb.h>
 #include <httpserver.h>
 #include <net.h>
 #include <netbase.h>
@@ -279,77 +278,6 @@ static UniValue setmocktime(const JSONRPCRequest& request)
     return NullUniValue;
 }
 
-bool getAddressesFromParams(const UniValue& params, std::vector<CScript> &addresses) {
-    if (params[0].isStr()) {
-        CTxDestination dest = DecodeDestination(params[0].get_str());
-        if (!IsValidDestination(dest)) return false;
-        addresses.push_back(GetScriptForDestination(dest));
-    } else if (params[0].isObject()) {
-        UniValue addressValues = find_value(params[0].get_obj(), "addresses");
-        if (!addressValues.isArray()) return false;
-        std::vector<UniValue> values = addressValues.getValues();
-        for (auto it : values) {
-            CTxDestination dest = DecodeDestination(it.get_str());
-            if (!IsValidDestination(dest)) return false;
-            addresses.push_back(GetScriptForDestination(dest));
-        }
-    } else {
-        return false;
-    }
-    return true;
-}
-
-UniValue getaddressbalance(const JSONRPCRequest& request)
-{
-    if (request.fHelp || request.params.size() != 1)
-        throw std::runtime_error(
-            "getaddressbalance\n"
-            "\nReturns the balance for an address(es) (requires txindex to be enabled).\n"
-            "\nArguments:\n"
-            "{\n"
-            "  \"addresses\"\n"
-            "    [\n"
-            "      \"address\"  (string) The base58check encoded address\n"
-            "      ,...\n"
-            "    ]\n"
-            "}\n"
-            "\nResult:\n"
-            "{\n"
-            "  \"balance\"  (string) The current balance in duffs\n"
-            "  \"received\"  (string) The total number of duffs received (including change)\n"
-            "}\n"
-            "\nExamples:\n"
-            + HelpExampleCli("getaddressbalance", "'{\"addresses\": [\"XwnLY9Tf7Zsef8gMGL2fhWA9ZmMjt4KPwg\"]}'")
-            + HelpExampleRpc("getaddressbalance", "{\"addresses\": [\"XwnLY9Tf7Zsef8gMGL2fhWA9ZmMjt4KPwg\"]}")
-        );
-
-    std::vector<CScript> addresses;
-    if (!getAddressesFromParams(request.params, addresses)) {
-        throw JSONRPCError(RPC_INVALID_ADDRESS_OR_KEY, "Invalid address");
-    }
-    CAddressInfo info; info.total_max = 100; 
-    for (auto& it : addresses) {
-        if (!GetAddressInfo(it, info))
-            throw JSONRPCError(RPC_INVALID_ADDRESS_OR_KEY, "No information available for address");
-    }
-
-    UniValue result(UniValue::VARR);
-    for (auto& it : info.data) {
-        UniValue output(UniValue::VOBJ);
-        CTxDestination ar;
-        output.pushKV("address", ExtractDestination (it.script, ar) ? EncodeDestination(ar) : ScriptToAsmStr(it.script));
-        output.pushKV("script", HexStr(it.script.begin(), it.script.end()));
-        output.pushKV("value", ValueFromAmount(it.value));
-        output.pushKV("height", ValueFromAmount(it.height));
-        output.pushKV(it.state != CAddressInfoState::SEND ? "from" : "to",
-            strprintf("%s:%d %s%s", it.tx_hash.ToString(), it.tx_out,
-                it.state == CAddressInfoState::SPEND ? "[SPENT]" : "", 
-                it.state == CAddressInfoState::MATURE ? "[MATURE]" : ""));
-        result.push_back(output);
-    }
-    return result;
-}
-
 static UniValue RPCLockedMemoryInfo()
 {
     LockedPool::Stats stats = LockedPoolManager::Instance().stats();
@@ -550,7 +478,6 @@ static const CRPCCommand commands[] =
     { "util",               "createmultisig",         &createmultisig,         {"nrequired","keys","address_type"} },
     { "util",               "verifymessage",          &verifymessage,          {"address","signature","message"} },
     { "util",               "signmessagewithprivkey", &signmessagewithprivkey, {"privkey","message"} },
-    { "address",            "getaddressbalance",      &getaddressbalance,      {"addresses"} },
 
     /* Not shown in help */
     { "hidden",             "setmocktime",            &setmocktime,            {"timestamp"}},

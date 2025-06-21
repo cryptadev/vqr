@@ -7,6 +7,7 @@
 #include <chain.h>
 #include <chainparams.h>
 #include <core_io.h>
+#include <index/txindex.h>
 #include <primitives/block.h>
 #include <primitives/transaction.h>
 #include <validation.h>
@@ -359,6 +360,10 @@ static bool rest_tx(HTTPRequest* req, const std::string& strURIPart)
     uint256 hash;
     if (!ParseHashStr(hashStr, hash))
         return RESTERR(req, HTTP_BAD_REQUEST, "Invalid hash: " + hashStr);
+
+    if (g_txindex) {
+        g_txindex->BlockUntilSyncedToCurrentChain();
+    }
 
     CTransactionRef tx;
     uint256 hashBlock = uint256();
@@ -920,17 +925,15 @@ bool api_address (HTTPRequest* req, const std::string& strURIPart) {
     if (!CheckWarmup(req)) return false;
     std::vector<std::string> suri;
     boost::split (suri, strURIPart, boost::is_any_of("/"));
-    CAddressInfo info; 
     std::string addr = (suri.size() > 0) ? suri[0] : "";
     int index = (suri.size() > 1) ? atoi64(suri[1]) : 0;
     index = (index > 9999999) ? 9999999 : ((index < 0) ? 0 : index);
     int count = (suri.size() > 2) ? atoi64(suri[2]) : 1000;
-    info.total_max = ((suri.size() > 3) && (suri[3] == "max")) ? -1 : 10000;
+    int total_max = ((suri.size() > 3) && (suri[3] == "max")) ? -1 : 10000;
     if (!IsValidDestination(DecodeDestination(addr)))
         return API_ERROR (req, "address " + strURIPart + " is invalid");
     CScript saddr = GetScriptForDestination(DecodeDestination(addr)); 
-    if (!GetAddressInfo(saddr, info))
-        return API_ERROR (req, "address " + strURIPart + " not found");
+    CAddressInfo info = g_txindex ? g_txindex->FindAddress(saddr, total_max) : CAddressInfo();
     UniValue coins(UniValue::VARR);
     int total_pos = 0;
     bool only_unspent = req->GetURI().find("/api/unspent/") != std::string::npos;
@@ -961,37 +964,47 @@ bool api_address (HTTPRequest* req, const std::string& strURIPart) {
         objTx.pushKV("send_amount", ValueFromAmount(info.send_amount));
     }
     objTx.pushKV("offset", index);
-    objTx.pushKV("count", info.total_in + 
-        ((info.total_max > 0) && (info.total_out > info.total_max) ? info.total_max : info.total_out));
+    objTx.pushKV("count", info.total_in + ((total_max > 0) && (info.total_out > total_max) ? total_max : info.total_out));
     objTx.pushKV("height", (int64_t)info.height);
     objTx.pushKV("coins", coins);
     return API_OK (req, objTx);
 }
 
-bool api_richlist (HTTPRequest* req, const std::string& strURIPart) {
-    if (!CheckWarmup(req)) return false;
+struct CRichInfo {
+    CAmount total{0};
+    int height{0};
+    std::vector<std::pair<CScript, CAmount>> data{};
+};
+
+CRichInfo GetRichInfo () {
+    static CRichInfo cached_data{};
+    static CCriticalSection cached_lock{};
+
+    if (IsInitialBlockDownload()) return CRichInfo();
+    LOCK(cached_lock);
+    if (cached_data.height + 4 > chainActive.Height()) return cached_data;
 
     std::unique_ptr<CCoinsViewCursor> pcursor;
-    int hei;
     {
         LOCK(cs_main);
         FlushStateToDisk();
         pcursor = std::unique_ptr<CCoinsViewCursor>(pcoinsdbview->Cursor());
-        hei = chainActive.Height();
+        cached_data.height = chainActive.Height();
     }
 
     std::map<CScript, CAmount> balmap;
-    CAmount total = 0;
+    cached_data.total = 0;
     while (pcursor->Valid()) {
         COutPoint key;
         Coin coin;
         if (pcursor->GetKey(key) && pcursor->GetValue(coin) && (!coin.IsSpent())) {
-            total += coin.out.nValue;
+            cached_data.total += coin.out.nValue;
             balmap[coin.out.scriptPubKey] += coin.out.nValue;
         }
         pcursor->Next();
-        if (ShutdownRequested()) break;
+        if (ShutdownRequested()) return CRichInfo();
     }
+
     std::vector<std::pair<CScript, CAmount>> balvec;
     balvec.reserve(balmap.size());
     for (const auto& item : balmap)
@@ -999,9 +1012,17 @@ bool api_richlist (HTTPRequest* req, const std::string& strURIPart) {
             balvec.push_back (std::make_pair(item.first, item.second));
     std::sort (balvec.begin(), balvec.end(),
         [](const std::pair<CScript, CAmount> &l, const std::pair<CScript, CAmount> &r) { return l.second > r.second; });
+    balvec.resize(255);
+    cached_data.data = balvec;
+    return cached_data;
+}
+
+bool api_richlist (HTTPRequest* req, const std::string& strURIPart) {
+    if (!CheckWarmup(req)) return false;
+    CRichInfo rich = GetRichInfo ();
     int index = 1;
     UniValue arr (UniValue::VARR);
-    for (const auto& item : balvec) {
+    for (const auto& item : rich.data) {
         UniValue val(UniValue::VOBJ);
         CTxDestination addr;
         if (ExtractDestination(item.first, addr)) {
@@ -1014,9 +1035,9 @@ bool api_richlist (HTTPRequest* req, const std::string& strURIPart) {
         if (++index > 255) break;
     }
     UniValue ret (UniValue::VOBJ);
-    ret.pushKV("balance", total);
+    ret.pushKV("balance", rich.total);
     ret.pushKV("rich", arr);
-    ret.pushKV("height", hei);
+    ret.pushKV("height", rich.height);
     return API_OK (req, ret);
 }
 

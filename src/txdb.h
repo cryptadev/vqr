@@ -41,31 +41,6 @@ static const int64_t nMaxTxIndexCache = 1024;
 //! Max memory allocated to coin DB specific cache (MiB)
 static const int64_t nMaxCoinsDBCache = 8;
 
-struct CDiskTxPos : public CDiskBlockPos
-{
-    unsigned int nTxOffset; // after header
-
-    ADD_SERIALIZE_METHODS;
-
-    template <typename Stream, typename Operation>
-    inline void SerializationOp(Stream& s, Operation ser_action) {
-        READWRITE(*(CDiskBlockPos*)this);
-        READWRITE(VARINT(nTxOffset));
-    }
-
-    CDiskTxPos(const CDiskBlockPos &blockIn, unsigned int nTxOffsetIn) : CDiskBlockPos(blockIn.nFile, blockIn.nPos), nTxOffset(nTxOffsetIn) {
-    }
-
-    CDiskTxPos() {
-        SetNull();
-    }
-
-    void SetNull() {
-        CDiskBlockPos::SetNull();
-        nTxOffset = 0;
-    }
-};
-
 /** CCoinsView backed by the coin database (chainstate/) */
 class CCoinsViewDB final : public CCoinsView
 {
@@ -124,24 +99,6 @@ public:
     bool WriteFlag(const std::string &name, bool fValue);
     bool ReadFlag(const std::string &name, bool &fValue);
     bool LoadBlockIndexGuts(const Consensus::Params& consensusParams, std::function<CBlockIndex*(const uint256&)> insertBlockIndex);
-};
-
-class CTxIndexDB : public CDBWrapper
-{
-public:
-    explicit CTxIndexDB(bool fWipe);
-    bool Read (const uint256& txid, CDiskTxPos& pos);
-    bool Write (const std::vector<std::pair<uint256, CDiskTxPos> >& vec);
-    bool Flush ();
-};
-
-class CAddressIndexDB : public CDBWrapper
-{
-public:
-    explicit CAddressIndexDB(bool fWipe);
-    bool Read (const CScript& script, std::map<CAddressKey, CAddressValue>& vec);
-    bool Write (const std::vector<std::pair<CAddressKey, CAddressValue>>& vec);
-    bool Flush ();
 };
 
 #endif // BITCOIN_TXDB_H

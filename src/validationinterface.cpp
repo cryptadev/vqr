@@ -23,8 +23,8 @@ struct MainSignalsInstance {
 
     boost::signals2::signal<void (const CBlockIndex *, const CBlockIndex *, bool fInitialDownload)> UpdatedBlockTip;
     boost::signals2::signal<void (const CTransactionRef &)> TransactionAddedToMempool;
-    boost::signals2::signal<void (const std::shared_ptr<const CBlock> &, const CBlockIndex *pindex, const std::vector<CTransactionRef>&)> BlockConnected;
-    boost::signals2::signal<void (const std::shared_ptr<const CBlock> &)> BlockDisconnected;
+    boost::signals2::signal<void (const std::shared_ptr<const CBlock> &, const CBlockIndex *pindex)> BlockConnected;
+    boost::signals2::signal<void (const std::shared_ptr<const CBlock> &, const CBlockIndex *pindex)> BlockDisconnected;
     boost::signals2::signal<void (const CTransactionRef &)> TransactionRemovedFromMempool;
     boost::signals2::signal<void (const CBlockLocator &)> ChainStateFlushed;
     boost::signals2::signal<void (int64_t nBestBlockTime, CConnman* connman)> Broadcast;
@@ -78,8 +78,8 @@ void RegisterValidationInterface(CValidationInterface* pwalletIn) {
     g_signals.m_internals->NotifyHeaderTip.connect(boost::bind(&CValidationInterface::NotifyHeaderTip, pwalletIn, _1, _2));
     g_signals.m_internals->UpdatedBlockTip.connect(boost::bind(&CValidationInterface::UpdatedBlockTip, pwalletIn, _1, _2, _3));
     g_signals.m_internals->TransactionAddedToMempool.connect(boost::bind(&CValidationInterface::TransactionAddedToMempool, pwalletIn, _1));
-    g_signals.m_internals->BlockConnected.connect(boost::bind(&CValidationInterface::BlockConnected, pwalletIn, _1, _2, _3));
-    g_signals.m_internals->BlockDisconnected.connect(boost::bind(&CValidationInterface::BlockDisconnected, pwalletIn, _1));
+    g_signals.m_internals->BlockConnected.connect(boost::bind(&CValidationInterface::BlockConnected, pwalletIn, _1, _2));
+    g_signals.m_internals->BlockDisconnected.connect(boost::bind(&CValidationInterface::BlockDisconnected, pwalletIn, _1, _2));
     g_signals.m_internals->TransactionRemovedFromMempool.connect(boost::bind(&CValidationInterface::TransactionRemovedFromMempool, pwalletIn, _1));
     g_signals.m_internals->ChainStateFlushed.connect(boost::bind(&CValidationInterface::ChainStateFlushed, pwalletIn, _1));
     g_signals.m_internals->Broadcast.connect(boost::bind(&CValidationInterface::ResendWalletTransactions, pwalletIn, _1, _2));
@@ -92,8 +92,8 @@ void UnregisterValidationInterface(CValidationInterface* pwalletIn) {
     g_signals.m_internals->Broadcast.disconnect(boost::bind(&CValidationInterface::ResendWalletTransactions, pwalletIn, _1, _2));
     g_signals.m_internals->ChainStateFlushed.disconnect(boost::bind(&CValidationInterface::ChainStateFlushed, pwalletIn, _1));
     g_signals.m_internals->TransactionAddedToMempool.disconnect(boost::bind(&CValidationInterface::TransactionAddedToMempool, pwalletIn, _1));
-    g_signals.m_internals->BlockConnected.disconnect(boost::bind(&CValidationInterface::BlockConnected, pwalletIn, _1, _2, _3));
-    g_signals.m_internals->BlockDisconnected.disconnect(boost::bind(&CValidationInterface::BlockDisconnected, pwalletIn, _1));
+    g_signals.m_internals->BlockConnected.disconnect(boost::bind(&CValidationInterface::BlockConnected, pwalletIn, _1, _2));
+    g_signals.m_internals->BlockDisconnected.disconnect(boost::bind(&CValidationInterface::BlockDisconnected, pwalletIn, _1, _2));
     g_signals.m_internals->TransactionRemovedFromMempool.disconnect(boost::bind(&CValidationInterface::TransactionRemovedFromMempool, pwalletIn, _1));
     g_signals.m_internals->UpdatedBlockTip.disconnect(boost::bind(&CValidationInterface::UpdatedBlockTip, pwalletIn, _1, _2, _3));
     g_signals.m_internals->NewPoWValidBlock.disconnect(boost::bind(&CValidationInterface::NewPoWValidBlock, pwalletIn, _1, _2));
@@ -154,15 +154,15 @@ void CMainSignals::TransactionAddedToMempool(const CTransactionRef &ptx) {
     });
 }
 
-void CMainSignals::BlockConnected(const std::shared_ptr<const CBlock> &pblock, const CBlockIndex *pindex, const std::shared_ptr<const std::vector<CTransactionRef>>& pvtxConflicted) {
-    m_internals->m_schedulerClient.AddToProcessQueue([pblock, pindex, pvtxConflicted, this] {
-        m_internals->BlockConnected(pblock, pindex, *pvtxConflicted);
+void CMainSignals::BlockConnected(const std::shared_ptr<const CBlock> &pblock, const CBlockIndex *pindex) {
+    m_internals->m_schedulerClient.AddToProcessQueue([pblock, pindex, this] {
+        m_internals->BlockConnected(pblock, pindex);
     });
 }
 
-void CMainSignals::BlockDisconnected(const std::shared_ptr<const CBlock> &pblock) {
-    m_internals->m_schedulerClient.AddToProcessQueue([pblock, this] {
-        m_internals->BlockDisconnected(pblock);
+void CMainSignals::BlockDisconnected(const std::shared_ptr<const CBlock> &pblock, const CBlockIndex *pindex) {
+    m_internals->m_schedulerClient.AddToProcessQueue([pblock, pindex, this] {
+        m_internals->BlockDisconnected(pblock, pindex);
     });
 }
 

@@ -35,8 +35,6 @@
 
 class CBlockIndex;
 class CBlockTreeDB;
-class CTxIndexDB;
-class CAddressIndexDB;
 class CChainParams;
 class CCoinsViewDB;
 class CInv;
@@ -161,8 +159,6 @@ extern uint256 g_best_block;
 extern std::atomic_bool fImporting;
 extern std::atomic_bool fReindex;
 extern int nScriptCheckThreads;
-extern bool fTxIndex;
-extern bool fAddressIndex;
 extern bool fIsBareMultisigStd;
 extern bool fRequireStandard;
 extern bool fCheckBlockIndex;
@@ -457,8 +453,6 @@ extern std::unique_ptr<CCoinsViewCache> pcoinsTip;
 
 /** Global variable that points to the active block tree (protected by cs_main) */
 extern std::unique_ptr<CBlockTreeDB> pblocktree;
-extern std::unique_ptr<CTxIndexDB> pblocktxindex;
-extern std::unique_ptr<CAddressIndexDB> pblockaddressindex;
 
 extern bool isStakeRepeatAddr;
 
@@ -496,27 +490,4 @@ bool CheckProofOfWork (const CBlockHeader& block, const Consensus::Params& param
 bool CheckProofOfStake (const CBlockHeader& block, const Consensus::Params& params, const COutPoint &out, 
     CAmount value, uint32_t time);
 
-enum CAddressInfoState { RECEIVE, MATURE, SPEND, SEND };
-
-struct CAddressInfoItem {
-    CScript script{};
-    CAmount value{0};
-    uint32_t height{0};
-    uint256 tx_hash{};
-    uint32_t tx_out{0};
-    CAddressInfoState state{CAddressInfoState::RECEIVE};
-
-    CAddressInfoItem (const CScript& ascript, CAmount avalue, uint32_t aheight, const uint256& atx_hash, uint32_t atx_out,
-        CAddressInfoState astate) : script(ascript), value(avalue), height(aheight), tx_hash(atx_hash), tx_out(atx_out),
-            state(astate) { };
-};
-
-struct CAddressInfo {
-    CAmount receive_amount{0}, send_amount{0};
-    int total_in{0}, total_out{0}, total_max{-1}, height{0};
-    std::vector<CAddressInfoItem> data{};
-};
-
-bool GetAddressInfo (const CScript& script, CAddressInfo& data);
-    
 #endif // BITCOIN_VALIDATION_H

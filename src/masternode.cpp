@@ -4307,8 +4307,7 @@ void CDSNotificationInterface::UpdatedBlockTip(const CBlockIndex *pindexNew, con
     votes.UpdatedBlockTip (pindexNew);
 }
 
-void CDSNotificationInterface::BlockConnected (const std::shared_ptr<const CBlock> &pblock, const CBlockIndex *pindex,
-    const std::vector<CTransactionRef> &vtxConflicted)
+void CDSNotificationInterface::BlockConnected (const std::shared_ptr<const CBlock> &pblock, const CBlockIndex *pindex)
 {
     votes.BlockConnected(pblock, pindex);
 }

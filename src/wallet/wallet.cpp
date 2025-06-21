@@ -1299,8 +1299,9 @@ void CWallet::TransactionRemovedFromMempool(const CTransactionRef &ptx) {
     }
 }
 
-void CWallet::BlockConnected(const std::shared_ptr<const CBlock>& pblock, const CBlockIndex *pindex, const std::vector<CTransactionRef>& vtxConflicted) {
+void CWallet::BlockConnected(const std::shared_ptr<const CBlock>& pblock, const CBlockIndex *pindex) {
     LOCK2(cs_main, cs_wallet);
+    LogPrintf("BlockConnected:   %d, %s\n", pindex->nHeight, pblock->GetHash().ToString());
     // TODO: Temporarily ensure that mempool removals are notified before
     // connected transactions.  This shouldn't matter, but the abandoned
     // state of transactions in our wallet is currently cleared when we
@@ -1309,10 +1310,6 @@ void CWallet::BlockConnected(const std::shared_ptr<const CBlock>& pblock, const 
     // to abandon a transaction and then have it inadvertently cleared by
     // the notification that the conflicted transaction was evicted.
 
-    for (const CTransactionRef& ptx : vtxConflicted) {
-        SyncTransaction(ptx);
-        TransactionRemovedFromMempool(ptx);
-    }
     for (size_t i = 0; i < pblock->vtx.size(); i++) {
         SyncTransaction(pblock->vtx[i], pindex, i);
         TransactionRemovedFromMempool(pblock->vtx[i]);
@@ -1337,8 +1334,9 @@ void CWallet::BlockConnected(const std::shared_ptr<const CBlock>& pblock, const 
     }
 }
 
-void CWallet::BlockDisconnected(const std::shared_ptr<const CBlock>& pblock) {
+void CWallet::BlockDisconnected(const std::shared_ptr<const CBlock>& pblock, const CBlockIndex *pindex) {
     LOCK2(cs_main, cs_wallet);
+    LogPrintf("BlockDisconnected: %d, %s\n", pindex->nHeight, pblock->GetHash().ToString());
 
     int pos = 0;
     for (const CTransactionRef& ptx : pblock->vtx) {
@@ -3075,14 +3073,6 @@ bool CWallet::CreateTransaction(const std::vector<CRecipient>& vecSend, CTransac
     return true;
 };
 
-uint32_t GetCachedBlockTime (std::map<uint256, uint64_t>& stakeAges, const uint256& tx_hash, const uint256& block_hash) {
-    if (stakeAges.count(tx_hash)) return stakeAges[tx_hash];
-    CBlockIndex* pindex = LookupBlockIndex (block_hash);
-    if (!pindex) return 0xFFFF0000;
-    stakeAges[tx_hash] = pindex->nTime;
-    return pindex->nTime;
-}
-
 bool CWallet::CreateStakeTransaction (CBlockHeader& header, CMutableTransaction &txNew, CAmount& nPosReward)
 {
     const Consensus::Params& consensus = Params().GetConsensus();
@@ -3112,7 +3102,8 @@ bool CWallet::CreateStakeTransaction (CBlockHeader& header, CMutableTransaction 
         if (pcoin.txout.nValue < 10 * COIN) continue;
         if (pcoin.txout.nValue == consensus.nMasternodeAmountLock * COIN) continue;
 
-        uint32_t time = GetCachedBlockTime (stakeAges, pcoin.outpoint.hash, inpcoin.tx->hashBlock);
+        CBlockIndex* pindex = LookupBlockIndex (inpcoin.tx->hashBlock);
+        uint32_t time = pindex ? pindex->nTime : 0xFFFF0000;
         if (time + consensus.nCoinAgeTick*3 > nCoinStakeTime - nSearchInterval) continue;
 
         bool fKernelFound = false;
@@ -3123,7 +3114,6 @@ bool CWallet::CreateStakeTransaction (CBlockHeader& header, CMutableTransaction 
                 fKernelFound = true;
                 nCredit += pcoin.txout.nValue;
                 txNew.vin.push_back(CTxIn(pcoin.outpoint.hash, pcoin.outpoint.n));
-                stakeAges.erase (pcoin.outpoint.hash);      // erase from cache
 
                 CScript scriptPubKeyOut;
                 if (isStakeRepeatAddr) {
@@ -3150,15 +3140,12 @@ bool CWallet::CreateStakeTransaction (CBlockHeader& header, CMutableTransaction 
     for (const COutput& inpcoin : stakeCoins) {
         if (!inpcoin.fSpendable) continue;
         CInputCoin pcoin = inpcoin.GetInputCoin();
-        if (txNew.vin.size() > 23) break;
+        if (txNew.vin.size() > 31) break;
         if (txNew.vin[0].prevout == pcoin.outpoint) continue;
-        uint32_t time = GetCachedBlockTime (stakeAges, pcoin.outpoint.hash, inpcoin.tx->hashBlock);
-        if (time + consensus.nCoinAgeTick*3 > header.nTime) continue;
-        if ((header.nTime - time > 86400) && (pcoin.txout.nValue > 10 * COIN)) continue;
         if (pcoin.txout.nValue >= consensus.nMasternodeAmountLock * COIN) continue;
         txNew.vin.push_back(CTxIn(pcoin.outpoint.hash, pcoin.outpoint.n));
         nCredit += pcoin.txout.nValue;
-        stakeAges.erase (pcoin.outpoint.hash);      // erase from cache
+        if (nCredit > 1200 * COIN) break;
     }
 
     // Calculate coin age reward
@@ -3172,7 +3159,7 @@ bool CWallet::CreateStakeTransaction (CBlockHeader& header, CMutableTransaction 
     while(true) {
         // Set output amount
         if (txNew.vout.size() == 2) {
-            txNew.vout[0].nValue = 801 * COIN + GetRand (149 * COIN);
+            txNew.vout[0].nValue = 701 * COIN + GetRand (199 * COIN);
             txNew.vout[1].nValue = nCredit - nMinFee - txNew.vout[0].nValue;
         } else
             txNew.vout[0].nValue = nCredit - nMinFee;

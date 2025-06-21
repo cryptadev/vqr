@@ -17,6 +17,7 @@
 #include <consensus/validation.h>
 #include <cuckoocache.h>
 #include <hash.h>
+#include <index/txindex.h>
 #include <policy/policy.h>
 #include <policy/rbf.h>
 #include <pow.h>
@@ -190,7 +191,6 @@ CCriticalSection cs_main;
 
 BlockMap& mapBlockIndex = g_chainstate.mapBlockIndex;
 CChain& chainActive = g_chainstate.chainActive;
-std::atomic<int> chainActiveHeight{0};
 CBlockIndex *pindexBestHeader = nullptr;
 CWaitableCriticalSection g_best_block_mutex;
 CConditionVariable g_best_block_cv;
@@ -198,8 +198,6 @@ uint256 g_best_block;
 int nScriptCheckThreads = 0;
 std::atomic_bool fImporting(false);
 std::atomic_bool fReindex(false);
-bool fTxIndex = DEFAULT_TXINDEX;
-bool fAddressIndex = false;
 bool fHavePruned = false;
 bool fPruneMode = false;
 bool fIsBareMultisigStd = DEFAULT_PERMIT_BAREMULTISIG;
@@ -253,8 +251,6 @@ namespace {
 std::unique_ptr<CCoinsViewDB> pcoinsdbview;
 std::unique_ptr<CCoinsViewCache> pcoinsTip;
 std::unique_ptr<CBlockTreeDB> pblocktree;
-std::unique_ptr<CTxIndexDB> pblocktxindex;
-std::unique_ptr<CAddressIndexDB> pblockaddressindex;
 
 bool isStakeRepeatAddr = false;
 
@@ -540,7 +536,7 @@ int GetUTXOConfirmations(const COutPoint& outpoint)
     // -1 means UTXO is yet unknown or already spent
     LOCK(cs_main);
     int nPrevoutHeight = GetUTXOHeight(outpoint);
-    return (nPrevoutHeight > -1) ? chainActiveHeight - nPrevoutHeight + 1 : -1;
+    return (nPrevoutHeight > -1 && chainActive.Tip()) ? chainActive.Height() - nPrevoutHeight + 1 : -1;
 }
 
 static bool AcceptToMemoryPoolWorker(const CChainParams& chainparams, CTxMemPool& pool, CValidationState& state, const CTransactionRef& ptx,
@@ -1002,22 +998,8 @@ bool GetTransaction(const uint256& hash, CTransactionRef& txOut, const Consensus
             return true;
         }
 
-        if (fTxIndex) {
-            CDiskTxPos postx;
-            if (!pblocktxindex->Read(hash, postx)) return false;
-            CAutoFile file(OpenBlockFile(postx, true), SER_DISK, CLIENT_VERSION);
-            if (file.IsNull()) return error("%s: OpenBlockFile failed", __func__);
-            CBlockHeader header;
-            try {
-                file >> header;
-                if (fseek(file.Get(), postx.nTxOffset, SEEK_CUR)) return error("%s: fseek(...) failed", __func__);
-                file >> txOut;
-            } catch (const std::exception& e) {
-                return error("%s: Deserialize or I/O error - %s", __func__, e.what());
-            }
-            if (txOut->GetHash() != hash) return error("%s: txid mismatch", __func__);
-            hashBlock = header.GetHash();
-            return true;
+        if (g_txindex) {
+            return g_txindex->FindTx(hash, hashBlock, txOut);
         }
 
         if (fAllowSlow) { // use coin database to locate block that contains transaction, and scan it
@@ -1503,58 +1485,6 @@ static bool AbortNode(CValidationState& state, const std::string& strMessage, co
 
 } // namespace
 
-std::map<CScript, std::pair<int, CAddressInfo> > historyCache;
-CCriticalSection historyCacheLock;
-
-void CleanAddressInfo (int hei = 0, bool dolock = true) {
-    if (dolock) LOCK(historyCacheLock);
-    auto it1 = historyCache.begin();
-    while (it1 != historyCache.end()) {
-        if (it1->second.first == hei) { ++it1; } else { it1 = historyCache.erase (it1); }
-    }
-}
-
-bool GetAddressInfo (const CScript& script, CAddressInfo& data) {
-    if (IsInitialBlockDownload())
-        return false;
-    LOCK(historyCacheLock);
-    int hei = chainActiveHeight;
-    if (historyCache.count(script) > 0) {
-        auto& item = historyCache[script];
-        if (item.first == hei) {
-            data = item.second;
-            return true;
-        } else CleanAddressInfo (hei, false); 
-    }
-    std::map<CAddressKey, CAddressValue> retmap;
-    if (pblockaddressindex) pblockaddressindex->Read (script, retmap);
-    data.receive_amount = data.send_amount = 0;
-    data.total_in = data.total_out = 0;
-    data.height = hei;
-    data.data.reserve (retmap.size() * 2);
-    for (const auto& it : retmap) {
-        data.total_in++;
-        data.receive_amount += it.second.value;
-        if (it.second.spend_height != 0) {
-            data.total_out++;
-            data.send_amount += it.second.value;
-        }
-        if ((it.second.spend_height != 0) && (data.total_max > 0) && (data.total_out > data.total_max)) continue;
-        data.data.push_back (CAddressInfoItem(it.first.script, it.second.value, it.second.height,
-            it.first.out.hash, it.first.out.n, (it.second.spend_height > 0) ? CAddressInfoState::SPEND : (
-                (it.second.iscoinbase && ((it.second.height + COINBASE_MATURITY) > hei)) ?
-                    CAddressInfoState::MATURE : CAddressInfoState::RECEIVE)));
-        if (it.second.spend_height > 0) {
-            data.data.push_back (CAddressInfoItem(it.first.script, it.second.value, it.second.spend_height,
-                it.second.spend_hash, it.second.spend_n, CAddressInfoState::SEND));
-        }
-    }
-    std::sort(data.data.begin(), data.data.end(), [](const CAddressInfoItem& l, const CAddressInfoItem& r) {
-        return (l.height == r.height) ? (int)l.state - (int)r.state : l.height > r.height; });
-    historyCache[script] = std::make_pair(hei, data);
-    return true;
-}
-
 /**
  * Restore the UTXO in a Coin at a given COutPoint
  * @param undo The Coin to be restored.
@@ -1606,8 +1536,6 @@ DisconnectResult CChainState::DisconnectBlock(const CBlock& block, const CBlockI
         return DISCONNECT_FAILED;
     }
 
-    std::vector<std::pair<CAddressKey, CAddressValue>> addressKeyValue;
-
     // undo transactions in reverse order
     for (int i = block.vtx.size() - 1; i >= 0; i--) {
         const CTransaction &tx = *(block.vtx[i]);
@@ -1620,8 +1548,6 @@ DisconnectResult CChainState::DisconnectBlock(const CBlock& block, const CBlockI
             if (!tx.vout[o].scriptPubKey.IsUnspendable()) {
                 COutPoint out(hash, o);
                 Coin coin;
-                if (fAddressIndex)
-                    addressKeyValue.push_back(std::make_pair(CAddressKey(tx.vout[o].scriptPubKey, out), CAddressValue()));
                 bool is_spent = view.SpendCoin(out, &coin);
                 if (!is_spent || tx.vout[o] != coin.out || pindex->nHeight != coin.nHeight || is_coinbase != coin.fCoinBase) {
                     fClean = false; // transaction output mismatch
@@ -1638,23 +1564,11 @@ DisconnectResult CChainState::DisconnectBlock(const CBlock& block, const CBlockI
             }
             for (unsigned int j = tx.vin.size(); j-- > 0;) {
                 const COutPoint &out = tx.vin[j].prevout;
-                if (fAddressIndex) {
-                    const Coin& coin = txundo.vprevout[j];
-                    addressKeyValue.push_back(std::make_pair(CAddressKey(coin.out.scriptPubKey, out), 
-                                CAddressValue(coin.out.nValue, coin.nHeight, coin.IsCoinBase())));
-                }
                 int res = ApplyTxInUndo(std::move(txundo.vprevout[j]), view, out);
                 if (res == DISCONNECT_FAILED) return DISCONNECT_FAILED;
                 fClean = fClean && res != DISCONNECT_UNCLEAN;
             }
             // At this point, all of txundo.vprevout should have been moved out.
-        }
-    }
-
-    if (fAddressIndex) {
-        if (!pblockaddressindex->Write(addressKeyValue)) {
-            AbortNode("Failed to write address");
-            return DISCONNECT_FAILED;
         }
     }
 
@@ -1745,26 +1659,6 @@ static unsigned int GetBlockScriptFlags(const CBlockIndex* pindex, const Consens
     }
 
     return flags;
-}
-
-static bool WriteTxIndexDataForBlock(const CBlock& block, CValidationState& state, CBlockIndex* pindex)
-{
-    if (!fTxIndex) return true;
-
-    CDiskTxPos pos(pindex->GetBlockPos(), GetSizeOfCompactSize(block.vtx.size()));
-    std::vector<std::pair<uint256, CDiskTxPos> > vPos;
-    vPos.reserve(block.vtx.size());
-    for (const CTransactionRef& tx : block.vtx)
-    {
-        vPos.push_back(std::make_pair(tx->GetHash(), pos));
-        pos.nTxOffset += ::GetSerializeSize(*tx, SER_DISK, CLIENT_VERSION);
-    }
-
-    if (!pblocktxindex->Write(vPos)) {
-        return AbortNode(state, "Failed to write transaction index");
-    }
-
-    return true;
 }
 
 static int64_t nTimeCheck = 0;
@@ -1925,7 +1819,6 @@ bool CChainState::ConnectBlock(const CBlock& block, CValidationState& state, CBl
     int64_t nSigOpsCost = 0;
     blockundo.vtxundo.reserve(block.vtx.size() - 1);
     std::vector<PrecomputedTransactionData> txdata;
-    std::vector<std::pair<CAddressKey, CAddressValue>> addressKeyValue;
     txdata.reserve(block.vtx.size()); // Required so that pointers to individual PrecomputedTransactionData don't get invalidated
     for (unsigned int i = 0; i < block.vtx.size(); i++)
     {
@@ -1957,13 +1850,6 @@ bool CChainState::ConnectBlock(const CBlock& block, CValidationState& state, CBl
                 return state.DoS(100, error("%s: contains a non-BIP68-final transaction", __func__),
                                  REJECT_INVALID, "bad-txns-nonfinal");
             }
-            for (size_t j = 0; j < tx.vin.size(); j++) {
-                if (!fAddressIndex) break;
-                const Coin& coin = view.AccessCoin(tx.vin[j].prevout);
-                addressKeyValue.push_back(std::make_pair(CAddressKey(coin.out.scriptPubKey, tx.vin[j].prevout),
-                    CAddressValue(coin.out.nValue, fTxIndex ? coin.nHeight : 0, coin.IsCoinBase(), 
-                    pindex->nHeight, tx.GetHash(), j)));
-            }
         }
 
         // GetTransactionSigOpCost counts 3 types of sigops:
@@ -1984,14 +1870,6 @@ bool CChainState::ConnectBlock(const CBlock& block, CValidationState& state, CBl
                 return error("ConnectBlock(): CheckInputs on %s failed with %s",
                     tx.GetHash().ToString(), FormatStateMessage(state));
             control.Add(vChecks);
-        }
-
-        for (unsigned int k = 0; k < tx.vout.size(); k++) {
-            if (!fAddressIndex) break;
-            const CTxOut &out = tx.vout[k];
-            if (out.scriptPubKey.IsUnspendable()) continue;
-            addressKeyValue.push_back(std::make_pair(CAddressKey(out.scriptPubKey, COutPoint(tx.GetHash(), k)),
-                        CAddressValue(out.nValue, pindex->nHeight, tx.IsCoinBase())));
         }
 
         CTxUndo undoDummy;
@@ -2032,16 +1910,6 @@ bool CChainState::ConnectBlock(const CBlock& block, CValidationState& state, CBl
     if (!pindex->IsValid(BLOCK_VALID_SCRIPTS)) {
         pindex->RaiseValidity(BLOCK_VALID_SCRIPTS);
         setDirtyBlockIndex.insert(pindex);
-    }
-
-    if (!WriteTxIndexDataForBlock(block, state, pindex))
-        return false;
-
-    if (fAddressIndex) {
-        if (!pblockaddressindex->Write(addressKeyValue)) {
-            AbortNode("Failed to write address");
-            return DISCONNECT_FAILED;
-        }
     }
 
     assert(pindex->phashBlock);
@@ -2220,13 +2088,6 @@ bool static FlushStateToDisk(const CChainParams& chainparams, CValidationState &
                 if (!pblocktree->WriteBatchSync(vFiles, nLastBlockFile, vBlocks)) {
                     return AbortNode(state, "Failed to write to block index database");
                 }
-                if (fTxIndex && !pblocktxindex->Flush()) {
-                    return AbortNode(state, "Failed to write transaction index");
-                }
-                if (fAddressIndex && !pblockaddressindex->Flush()) {
-                    return AbortNode(state, "Failed to write addresses index");
-                }
-                CleanAddressInfo ();
             }
             // Finally remove any pruned files
             if (fFlushForPrune)
@@ -2365,12 +2226,11 @@ bool CChainState::DisconnectTip(CValidationState& state, const CChainParams& cha
     }
 
     chainActive.SetTip(pindexDelete->pprev);
-    chainActiveHeight = chainActive.Height();
 
     UpdateTip(pindexDelete->pprev, chainparams);
     // Let wallets know transactions went from 1-confirmed to
     // 0-confirmed or conflicted:
-    GetMainSignals().BlockDisconnected(pblock);
+    GetMainSignals().BlockDisconnected(pblock, pindexDelete);
     return true;
 }
 
@@ -2383,8 +2243,7 @@ static int64_t nTimePostConnect = 0;
 struct PerBlockConnectTrace {
     CBlockIndex* pindex = nullptr;
     std::shared_ptr<const CBlock> pblock;
-    std::shared_ptr<std::vector<CTransactionRef>> conflictedTxs;
-    PerBlockConnectTrace() : conflictedTxs(std::make_shared<std::vector<CTransactionRef>>()) {}
+    PerBlockConnectTrace() {}
 };
 /**
  * Used to track blocks whose transactions were applied to the UTXO state as a
@@ -2409,11 +2268,6 @@ private:
 
 public:
     explicit ConnectTrace(CTxMemPool &_pool) : blocksConnected(1), pool(_pool) {
-        pool.NotifyEntryRemoved.connect(boost::bind(&ConnectTrace::NotifyEntryRemoved, this, _1, _2));
-    }
-
-    ~ConnectTrace() {
-        pool.NotifyEntryRemoved.disconnect(boost::bind(&ConnectTrace::NotifyEntryRemoved, this, _1, _2));
     }
 
     void BlockConnected(CBlockIndex* pindex, std::shared_ptr<const CBlock> pblock) {
@@ -2432,16 +2286,8 @@ public:
         // one waiting for the transactions from the next block. We pop
         // the last entry here to make sure the list we return is sane.
         assert(!blocksConnected.back().pindex);
-        assert(blocksConnected.back().conflictedTxs->empty());
         blocksConnected.pop_back();
         return blocksConnected;
-    }
-
-    void NotifyEntryRemoved(CTransactionRef txRemoved, MemPoolRemovalReason reason) {
-        assert(!blocksConnected.back().pindex);
-        if (reason == MemPoolRemovalReason::CONFLICT) {
-            blocksConnected.back().conflictedTxs->emplace_back(std::move(txRemoved));
-        }
     }
 };
 
@@ -2496,7 +2342,6 @@ bool CChainState::ConnectTip(CValidationState& state, const CChainParams& chainp
     disconnectpool.removeForBlock(blockConnecting.vtx);
     // Update chainActive & related variables.
     chainActive.SetTip(pindexNew);
-    chainActiveHeight = chainActive.Height();
     UpdateTip(pindexNew, chainparams);
 
     int64_t nTime6 = GetTimeMicros(); nTimePostConnect += nTime6 - nTime5; nTimeTotal += nTime6 - nTime1;
@@ -2756,7 +2601,7 @@ bool CChainState::ActivateBestChain(CValidationState &state, const CChainParams&
 
                 for (const PerBlockConnectTrace& trace : connectTrace.GetBlocksConnected()) {
                     assert(trace.pblock && trace.pindex);
-                    GetMainSignals().BlockConnected(trace.pblock, trace.pindex, trace.conflictedTxs);
+                    GetMainSignals().BlockConnected(trace.pblock, trace.pindex);
                 }
             } while (!chainActive.Tip() || (starting_tip && CBlockIndexWorkComparator()(chainActive.Tip(), starting_tip)));
             if (!blocks_connected) return true;
@@ -3957,12 +3802,6 @@ bool static LoadBlockIndexDB(const CChainParams& chainparams) EXCLUSIVE_LOCKS_RE
     pblocktree->ReadReindexing(fReindexing);
     if(fReindexing) fReindex = true;
 
-    // Check whether we have a transaction index
-    pblocktree->ReadFlag("txindex", fTxIndex);
-    LogPrintf("%s: transaction index %s\n", __func__, fTxIndex ? "enabled" : "disabled"); 
-    pblocktree->ReadFlag("addressindex", fAddressIndex);
-    LogPrintf("%s: address index %s\n", __func__, fAddressIndex ? "enabled" : "disabled"); 
-
     return true;
 }
 
@@ -3989,7 +3828,6 @@ bool LoadChainTip(const CChainParams& chainparams)
         return false;
     }
     chainActive.SetTip(pindex);
-    chainActiveHeight = chainActive.Height();
 
     g_chainstate.PruneBlockIndexCandidates();
 
@@ -4210,7 +4048,6 @@ void UnloadBlockIndex()
 {
     LOCK(cs_main);
     chainActive.SetTip(nullptr);
-    chainActiveHeight = 0;
     pindexBestInvalid = nullptr;
     pindexBestHeader = nullptr;
     mempool.clear();
@@ -4247,11 +4084,6 @@ bool LoadBlockIndex(const CChainParams& chainparams)
         // needs_init.
 
         LogPrintf("Initializing databases...\n");
-        // Use the provided setting for -txindex in the new database
-        fTxIndex = gArgs.GetBoolArg("-txindex", DEFAULT_TXINDEX);
-        pblocktree->WriteFlag("txindex", fTxIndex);
-        fAddressIndex = gArgs.GetBoolArg("-addressindex", false);
-        pblocktree->WriteFlag("addressindex", fAddressIndex);
     }
     return true;
 }

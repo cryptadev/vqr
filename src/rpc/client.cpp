@@ -170,10 +170,6 @@ static const CRPCConvertParam vRPCConvertParams[] =
     { "echojson", 9, "arg9" },
     { "rescanblockchain", 0, "start_height"},
     { "rescanblockchain", 1, "stop_height"},
-    { "listminting", 0, "count" },
-    { "listminting", 1, "skip" },
-    { "listminting", 2, "minweight" },
-    { "listminting", 3, "maxweight" },
     { "createwallet", 1, "disable_private_keys"},
 };
 

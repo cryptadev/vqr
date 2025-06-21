@@ -957,8 +957,8 @@ public:
     bool AddToWallet(const CWalletTx& wtxIn, bool fFlushOnClose=true);
     void LoadToWallet(const CWalletTx& wtxIn);
     void TransactionAddedToMempool(const CTransactionRef& tx) override;
-    void BlockConnected(const std::shared_ptr<const CBlock>& pblock, const CBlockIndex *pindex, const std::vector<CTransactionRef>& vtxConflicted) override;
-    void BlockDisconnected(const std::shared_ptr<const CBlock>& pblock) override;
+    void BlockConnected(const std::shared_ptr<const CBlock>& pblock, const CBlockIndex *pindex) override;
+    void BlockDisconnected(const std::shared_ptr<const CBlock>& pblock, const CBlockIndex *pindex) override;
     int64_t RescanFromTime(int64_t startTime, const WalletRescanReserver& reserver, bool update);
     CBlockIndex* ScanForWalletTransactions(CBlockIndex* pindexStart, CBlockIndex* pindexStop, const WalletRescanReserver& reserver, bool fUpdate = false);
     void TransactionRemovedFromMempool(const CTransactionRef &ptx) override;
@@ -987,7 +987,6 @@ public:
     bool CreateTransaction(const std::vector<CRecipient>& vecSend, CTransactionRef& tx, CReserveKey& reservekey, CAmount& nFeeRet, int& nChangePosInOut,
                            std::string& strFailReason, const CCoinControl& coin_control, bool sign = true);
     std::vector<COutput> stakeCoins;
-    std::map<uint256, uint64_t> stakeAges;
     int32_t stakeLastUpdateTime{0}, stakeLastSearchTime{0};
     bool CreateStakeTransaction (CBlockHeader& header, CMutableTransaction &txNew, CAmount& posReward);
     bool SignBlock(CBlock& block);
