@@ -1,6 +1,6 @@
 // Copyright (c) 2009-2010 Satoshi Nakamoto
 // Copyright (c) 2009-2018 The Bitcoin Core developers
-// Copyright (c) 2021-2025 Uladzimir (t.me/vovanchik_net)
+// Copyright (c) 2021-2026 Uladzimir (t.me/cryptadev)
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
@@ -52,10 +52,6 @@
 
 #include <masternode.h>
 
-#ifdef ENABLE_WALLET
-#include <wallet/wallet.h>
-#endif
-
 #ifndef WIN32
 #include <signal.h>
 #endif
@@ -105,8 +101,6 @@ void DummyWalletInit::AddWalletOptions() const
 
 const WalletInitInterface& g_wallet_init_interface = DummyWalletInit();
 #endif
-
-static CDSNotificationInterface* pdsNotificationInterface = nullptr;
 
 #ifdef WIN32
 // Win32 LevelDB doesn't use filedescriptors, and the ones used for
@@ -186,6 +180,9 @@ void Interrupt()
     if (g_txindex) {
         g_txindex->Interrupt();
     }
+    if (g_masternodes) {
+        g_masternodes->Interrupt();
+    }
 }
 
 void Shutdown()
@@ -215,10 +212,9 @@ void Shutdown()
     if (peerLogic) UnregisterValidationInterface(peerLogic.get());
     if (g_connman) g_connman->Stop();
     if (g_txindex) g_txindex->Stop();
+    if (g_masternodes) g_masternodes->Stop();
 
     StopTorControl();
-
-    save_mn_dat ();
 
     // After everything has been shut down, but before things get flushed, stop the
     // CScheduler/checkqueue threadGroup
@@ -230,6 +226,7 @@ void Shutdown()
     peerLogic.reset();
     g_connman.reset();
     g_txindex.reset();
+    g_masternodes.reset();
 
     if (g_is_mempool_loaded && gArgs.GetArg("-persistmempool", DEFAULT_PERSIST_MEMPOOL)) {
         DumpMempool();
@@ -269,12 +266,6 @@ void Shutdown()
         g_zmq_notification_interface = nullptr;
     }
 #endif
-
-    if (pdsNotificationInterface) {
-        UnregisterValidationInterface(pdsNotificationInterface);
-        delete pdsNotificationInterface;
-        pdsNotificationInterface = nullptr;
-    }
 
 #ifndef WIN32
     try {
@@ -489,6 +480,8 @@ void SetupServerArgs()
 
     gArgs.AddArg("-masternode=<n>", strprintf(_("Enable the client to act as a masternode (0-1, default: %u)"), 0), false, OptionsCategory::OPTIONS);
     gArgs.AddArg("-mnconf=<file>", strprintf(_("Specify masternode configuration file (default: %s)"), "masternode.conf"), false, OptionsCategory::OPTIONS);
+    gArgs.AddArg("-masternode_key=<key>", _("Specify masternode key (default: \"\""), false, OptionsCategory::OPTIONS);
+    gArgs.AddArg("-masternode_output=<output>", _("Specify masternode output (default: \"\""), false, OptionsCategory::OPTIONS);
 
     SetupChainParamsBaseOptions();
 
@@ -992,7 +985,6 @@ bool AppInitParameterInteraction()
 
     g_logger->EnableCategory("mempool");
     g_logger->EnableCategory("mempoolrej");
-    g_logger->EnableCategory("rpc");
     if (gArgs.IsArgSet("-debug")) {
         // Special-case: if -debug=0/-nodebug is set, turn off debugging messages
         const std::vector<std::string> categories = gArgs.GetArgs("-debug");
@@ -1403,9 +1395,6 @@ bool AppInitMain()
         RegisterValidationInterface(g_zmq_notification_interface);
     }
 #endif
-    pdsNotificationInterface = new CDSNotificationInterface(connman);
-    RegisterValidationInterface(pdsNotificationInterface);
-
     uint64_t nMaxOutboundLimit = 0; //unlimited unless -maxuploadtarget is set
     uint64_t nMaxOutboundTimeframe = MAX_UPLOAD_TIMEFRAME;
 
@@ -1662,67 +1651,6 @@ bool AppInitMain()
         return false;
     }
 
-    fMasternodeMode = gArgs.GetBoolArg("-masternode", false);
-    std::string strErr;
-    if (!masternodeConfig.read(strErr)) {
-        LogPrintf("Error reading masternode configuration file: %s\n", strErr.c_str());
-        return false;
-    }
-
-#ifdef ENABLE_WALLET
-    LogPrintf("Using masternode config file %s\n", GetMasternodeConfigFile().string());
-#endif // ENABLE_WALLET
-
-    if (masternodeConfig.getCount() == 0) fMasternodeMode = false;
-    if (fMasternodeMode) {
-        LogPrintf("MASTERNODE:\n");
-
-        uint256 mnTxHash;
-        uint32_t outputIndex;
-        for (const auto& mne : masternodeConfig.getEntries()) {
-            mnTxHash.SetHex(mne.getTxHash());
-            outputIndex = (uint32_t)atoi(mne.getOutputIndex());
-            COutPoint outpoint = COutPoint(mnTxHash, outputIndex);
-            activeMasternode.outpoint = COutPoint(mnTxHash, outputIndex);
-            LogPrintf("  Masternode Outpoint: %s\n", activeMasternode.outpoint.ToString());
-            std::string strMasterNodePrivKey = mne.getPrivKey();
-            if (!strMasterNodePrivKey.empty()) {
-                if (!CMessageSigner::GetKeysFromSecret(strMasterNodePrivKey, activeMasternode.keyMasternode, activeMasternode.pubKeyMasternode))
-                    return InitError(_("Invalid masternodeprivkey. Please see documenation."));
-                LogPrintf("  Masternode Addr: %s\n", EncodeDestination(activeMasternode.pubKeyMasternode.GetID()));
-            } else {
-                return InitError(_("You must specify a masternodeprivkey in the configuration. Please see documentation for help."));
-            }
-            break;
-        }
-    }
-
-    load_mn_dat ();
-
-    pdsNotificationInterface->InitializeCurrentBlockTip();
-
-    scheduler.scheduleEvery([] () {       //  1 sec
-        masternodeSync.ProcessTick(*g_connman);
-        if (!masternodeSync.IsBlockchainSynced()) return;
-        mnodeman.Check();
-        mnodeman.ProcessPendingMnbRequests(*g_connman);
-        mnodeman.ProcessPendingMnvRequests(*g_connman);
-    }, 1000);
-    scheduler.scheduleEvery([] () {       //  1 min
-        if (!masternodeSync.IsBlockchainSynced()) return;
-        netfulfilledman.CheckAndRemove();
-        mnodeman.ProcessMasternodeConnections(*g_connman);
-        mnodeman.CheckAndRemove(*g_connman);
-        mnodeman.WarnMasternodeDaemonUpdates();
-        mnpayments.CheckAndRemove();
-    }, 60000);
-    scheduler.scheduleEvery([] () {       // 10 min
-        if (!masternodeSync.IsBlockchainSynced()) return;
-        mnodeman.DoFullVerificationStep(*g_connman);
-        activeMasternode.ManageState(*g_connman);
-        save_mn_dat ();
-    }, 600000);
-
     // ********************************************************* Step 12: start node
 
     int chain_active_height;
@@ -1800,6 +1728,9 @@ bool AppInitMain()
     if (!connman.Start(scheduler, connOptions)) {
         return false;
     }
+
+    g_masternodes = MakeUnique<CMasternodesInterface>(connman);
+    if (!g_masternodes->Start()) return false;
 
     // ********************************************************* Step 13: finished
 

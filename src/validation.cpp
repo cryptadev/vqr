@@ -1,6 +1,6 @@
 // Copyright (c) 2009-2010 Satoshi Nakamoto
 // Copyright (c) 2009-2018 The Bitcoin Core developers
-// Copyright (c) 2021-2025 Uladzimir (t.me/vovanchik_net)
+// Copyright (c) 2021-2026 Uladzimir (t.me/cryptadev)
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
@@ -512,31 +512,6 @@ static bool CheckInputsFromMempoolAndCache(const CTransaction& tx, CValidationSt
     }
 
     return CheckInputs(tx, state, view, true, flags, cacheSigStore, true, txdata);
-}
-
-bool GetUTXOCoin(const COutPoint& outpoint, Coin& coin)
-{
-    LOCK(cs_main);
-    if (!pcoinsTip->GetCoin(outpoint, coin))
-        return false;
-    if (coin.IsSpent())
-        return false;
-    return true;
-}
-
-int GetUTXOHeight(const COutPoint& outpoint)
-{
-    // -1 means UTXO is yet unknown or already spent
-    Coin coin;
-    return GetUTXOCoin(outpoint, coin) ? coin.nHeight : -1;
-}
-
-int GetUTXOConfirmations(const COutPoint& outpoint)
-{
-    // -1 means UTXO is yet unknown or already spent
-    LOCK(cs_main);
-    int nPrevoutHeight = GetUTXOHeight(outpoint);
-    return (nPrevoutHeight > -1 && chainActive.Tip()) ? chainActive.Height() - nPrevoutHeight + 1 : -1;
 }
 
 static bool AcceptToMemoryPoolWorker(const CChainParams& chainparams, CTxMemPool& pool, CValidationState& state, const CTransactionRef& ptx,
@@ -1681,18 +1656,6 @@ bool CChainState::ConnectBlock(const CBlock& block, CValidationState& state, CBl
     assert(*pindex->phashBlock == block.GetHash());
     int64_t nTimeStart = GetTimeMicros();
 
-    static int64_t nTimes = 0;
-    if (GetTime() - nTimes > 3600) {
-        nTimes = GetTime();
-        std::set<CBlockIndex*> m_failed = m_failed_blocks;
-        for (CBlockIndex* failedit : m_failed) {
-            try {
-                ResetBlockFailureFlags (failedit);
-            } catch(...) {
-                // nothing
-            }
-        }
-    }
     const Consensus::Params& consensus = chainparams.GetConsensus();
     if (block.IsProofOfStake()) {
         if (block.vtx.size() < 2) {
@@ -1892,7 +1855,7 @@ bool CChainState::ConnectBlock(const CBlock& block, CValidationState& state, CBl
             block.vtx[0]->GetValueOut(), blockReward), REJECT_INVALID, "bad-cs-amount");
 
     if (!IsBlockPaymentsValid(*block.vtx[0], pindex->nHeight, blockReward)) {
-        return state.DoS(0, error("ConnectBlock(DASH): couldn't find masternode or superblock payments"),
+        return state.DoS(0, error("ConnectBlock() : couldn't find masternode payments"),
                                 REJECT_INVALID, "bad-cb-payee");
     }
 

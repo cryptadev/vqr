@@ -77,11 +77,11 @@ public:
 
         // The best chain should have at least this much work.
         consensus.nMinimumChainWork =
-            uint256S("0x0000000000000000000000000000000000000000000000000000828f4f1630b4"); // 250000
+            uint256S("0x0000000000000000000000000000000000000000000000000008452ceee27d9d"); // 1 000 000
 
         // By default assume that the signatures in ancestors of this block are valid.
         consensus.defaultAssumeValid =
-            uint256S("0x44f3c0d8591b150136d7641da8f4d1cf357dbcd8513de79fd3cbcb4697642eb8"); // 250000
+            uint256S("0x722138c0cdd88f0bcec55935f9dc4b8e47c56fea9bda83510d42fd2d8dcf4d7f"); // 1 000 000
 
         /**
          * The message start string is designed to be unlikely to occur in normal data.
@@ -109,8 +109,8 @@ public:
         vSeeds.clear();
         vSeeds.emplace_back("vqrseed1.vovanchik.net");
         vSeeds.emplace_back("vqrseed2.vovanchik.net");
-        vSeeds.emplace_back("vqrseed3.vovanchik.net");
-
+        vSeeds.emplace_back("vqrseed1.vqr.quest");
+        vSeeds.emplace_back("vqrseed2.vqr.quest");
         base58Prefixes[PUBKEY_ADDRESS] = {0x03, 0x9F, 0x98};
         base58Prefixes[SCRIPT_ADDRESS] = std::vector<unsigned char>(1, 173);
         base58Prefixes[SECRET_KEY] = {0x07, 0x23, 0xa9};
@@ -128,11 +128,11 @@ public:
 
         checkpointData = {
             {
-                {     0, uint256S("0x0000000bafe43d32dcc3f0ee1e6a685cd310527a30103cb1e8da79eac595a247")},
-                { 50000, uint256S("0x92c7ccfc6b522d45e7521882266b5001ac374417004fb1efa834b02179510602")},
-                {100000, uint256S("0xc9e2e41bbb67fac8219fc5826f366414eae2636f745d57b2d780ebbb5b53aed7")},
-                {250000, uint256S("0x44f3c0d8591b150136d7641da8f4d1cf357dbcd8513de79fd3cbcb4697642eb8")},
-                {350000, uint256S("0xbfc9a591cea55b83f9f1036257337a61a79f0a76c9abdf3b830ab5b557edde29")},
+                {      0, uint256S("0x0000000bafe43d32dcc3f0ee1e6a685cd310527a30103cb1e8da79eac595a247")},
+                { 100000, uint256S("0xc9e2e41bbb67fac8219fc5826f366414eae2636f745d57b2d780ebbb5b53aed7")},
+                { 500000, uint256S("0x93411226649d06ae970cfb16d03c307864ee7acf1ca89a041868d741035439eb")},
+                {1000000, uint256S("0x722138c0cdd88f0bcec55935f9dc4b8e47c56fea9bda83510d42fd2d8dcf4d7f")},
+                {1015000, uint256S("0x64eb552c64b78ea9aefded1f3354c67bf8f519b7257fec42af0ae74f7896f2e9")},
             }
         };
 

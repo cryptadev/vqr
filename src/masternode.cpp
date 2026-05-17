@@ -1,5 +1,5 @@
 // Copyright (c) 2014-2017 The Dash Core developers
-// Copyright (c) 2021-2025 Uladzimir (t.me/vovanchik_net)
+// Copyright (c) 2021-2026 Uladzimir (t.me/cryptadev)
 // Distributed under the MIT/X11 software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
@@ -43,6 +43,31 @@ std::string script2addr (const CScript& script) {
     if (ExtractDestination(script, address)) ret = EncodeDestination (address);
     if (ret.empty()) ret = ScriptToAsmStr (script, true);
     return ret;
+}
+
+bool GetUTXOCoin(const COutPoint& outpoint, Coin& coin)
+{
+    LOCK(cs_main);
+    if (!pcoinsTip->GetCoin(outpoint, coin))
+        return false;
+    if (coin.IsSpent())
+        return false;
+    return true;
+}
+
+int GetUTXOHeight(const COutPoint& outpoint)
+{
+    // -1 means UTXO is yet unknown or already spent
+    Coin coin;
+    return GetUTXOCoin(outpoint, coin) ? coin.nHeight : -1;
+}
+
+int GetUTXOConfirmations(const COutPoint& outpoint)
+{
+    // -1 means UTXO is yet unknown or already spent
+    LOCK(cs_main);
+    int nPrevoutHeight = GetUTXOHeight(outpoint);
+    return (nPrevoutHeight > -1 && chainActive.Tip()) ? chainActive.Height() - nPrevoutHeight + 1 : -1;
 }
 
 // masternode
@@ -556,7 +581,7 @@ bool CMasternodeBroadcast::CheckOutpoint(int& nDos)
     }
 
     if (err == COLLATERAL_INVALID_AMOUNT) {
-        LogPrint(BCLog::MN, "CMasternodeBroadcast::CheckOutpoint -- Masternode UTXO should have 1000 DASH, masternode=%s\n", outpoint.ToString());
+        LogPrint(BCLog::MN, "CMasternodeBroadcast::CheckOutpoint -- Masternode UTXO should have 400 VQR, masternode=%s\n", outpoint.ToString());
         nDos = 33;
         return false;
     }
@@ -1245,7 +1270,7 @@ bool CMasternodeBlockPayees::IsTransactionValid(const CTransaction& txNew) const
         }
     }
 
-    LogPrintf("CMasternodeBlockPayees::IsTransactionValid -- ERROR: Missing required payment, possible payees: '%s', amount: %f DASH\n", strPayeesPossible, (float)nMasternodePayment/COIN);
+    LogPrintf("CMasternodeBlockPayees::IsTransactionValid -- ERROR: Missing required payment, possible payees: '%s', amount: %f VQR\n", strPayeesPossible, (float)nMasternodePayment/COIN);
     return false;
 }
 
@@ -1916,8 +1941,8 @@ void CMasternodeSync::ProcessTick(CConnman& connman)
                     return;
                 }
 
-                // request from three peers max
-                if (nRequestedMasternodeAttempt > 2) {
+                // request from 4 peers max
+                if (nRequestedMasternodeAttempt > 3) {
                     connman.ReleaseNodeVector(vNodesCopy);
                     return;
                 }
@@ -1965,8 +1990,8 @@ void CMasternodeSync::ProcessTick(CConnman& connman)
                     return;
                 }
 
-                // request from three peers max
-                if (nRequestedMasternodeAttempt > 2) {
+                // request from 4 peers max
+                if (nRequestedMasternodeAttempt > 3) {
                     connman.ReleaseNodeVector(vNodesCopy);
                     return;
                 }
@@ -2229,7 +2254,7 @@ void CMasternodeMan::CheckAndRemove(CConnman& connman)
             CMasternodeBroadcast mnb = CMasternodeBroadcast(it->second);
             uint256 hash = mnb.GetHash();
             // If collateral was spent ...
-            if (it->second.IsOutpointSpent() || (GetAdjustedTime() - it->second.lastPing.sigTime > 7 * 24 * 60 * 60)) {
+            if (it->second.IsOutpointSpent() || (GetAdjustedTime() - it->second.lastPing.sigTime > 3 * 24 * 60 * 60)) {
                 LogPrint(BCLog::MN, "CMasternodeMan::CheckAndRemove -- Removing Masternode: %s  addr=%s  %i now\n", it->second.GetStateString(), it->second.addr.ToString(), size() - 1);
 
                 // erase all of the broadcasts we've seen from this txin, ...
@@ -4236,7 +4261,7 @@ CNetFulfilledRequestManager netfulfilledman;
 
 void CNetFulfilledRequestManager::AddFulfilledRequest(const CService& addr, const std::string& strRequest) {
     LOCK(cs_mapFulfilledRequests);
-    mapFulfilledRequests[addr.ToString() + strRequest] = GetTime() + 15 * 60;
+    mapFulfilledRequests[addr.ToString() + strRequest] = GetTime() + 10 * 60;
 }
 
 bool CNetFulfilledRequestManager::HasFulfilledRequest(const CService& addr, const std::string& strRequest) {
@@ -4275,20 +4300,135 @@ std::string CNetFulfilledRequestManager::ToString() const {
     return info.str();
 }
 
-// dsnotificationinterface
+// CMasternodesInterface
 
-void CDSNotificationInterface::InitializeCurrentBlockTip()
-{
-    LOCK(cs_main);
-    UpdatedBlockTip(chainActive.Tip(), nullptr, IsInitialBlockDownload());
+void CMasternodesInterface::Interrupt() {
+    m_interrupt();
 }
 
-void CDSNotificationInterface::NotifyHeaderTip(const CBlockIndex *pindexNew, bool fInitialDownload)
+bool CMasternodesInterface::Start() {
+    fMasternodeMode = gArgs.GetBoolArg("-masternode", false);
+    bool fNeedConf = true;
+
+    std::string m_key = gArgs.GetArg("-masternode_key", "");
+    std::string m_out = gArgs.GetArg("-masternode_output", "");
+    if ((m_key != "") && (m_out != "")) {
+        size_t m_delim = m_out.find_last_of(':');
+        uint256 m_hash; m_hash.SetHex(m_delim != m_out.npos ? m_out.substr(0, m_delim) : m_out);
+        uint32_t m_outn = m_delim != m_out.npos ? (uint32_t)atoi(m_out.substr(m_delim + 1)) : 0;
+        activeMasternode.outpoint = COutPoint(m_hash, m_outn);
+        if (CMessageSigner::GetKeysFromSecret(m_key, activeMasternode.keyMasternode, activeMasternode.pubKeyMasternode)) {
+            LogPrintf("  Masternode Outpoint: %s\n", activeMasternode.outpoint.ToString());
+            LogPrintf("  Masternode Addr: %s\n", EncodeDestination(activeMasternode.pubKeyMasternode.GetID()));
+            fMasternodeMode = true;
+            fNeedConf = false;
+        }
+    }
+
+    if (fMasternodeMode && fNeedConf) {
+        std::string strErr;
+        if (!masternodeConfig.read(strErr)) {
+            return InitError(strprintf("Error reading masternode configuration file: %s\n", strErr));
+        }
+
+        LogPrintf("Using masternode config file %s\n", GetMasternodeConfigFile().string());
+
+        if (masternodeConfig.getCount() == 0) fMasternodeMode = false;
+    }
+
+    if (fMasternodeMode && fNeedConf) {
+        LogPrintf("MASTERNODE:\n");
+
+        uint256 mnTxHash;
+        uint32_t outputIndex;
+        for (const auto& mne : masternodeConfig.getEntries()) {
+            mnTxHash.SetHex(mne.getTxHash());
+            outputIndex = (uint32_t)atoi(mne.getOutputIndex());
+            COutPoint outpoint = COutPoint(mnTxHash, outputIndex);
+            activeMasternode.outpoint = COutPoint(mnTxHash, outputIndex);
+            LogPrintf("  Masternode Outpoint: %s\n", activeMasternode.outpoint.ToString());
+            std::string strMasterNodePrivKey = mne.getPrivKey();
+            if (!strMasterNodePrivKey.empty()) {
+                if (!CMessageSigner::GetKeysFromSecret(strMasterNodePrivKey, activeMasternode.keyMasternode, activeMasternode.pubKeyMasternode)) {
+                    return InitError("Invalid masternodeprivkey. Please see documenation.");
+                }
+                LogPrintf("  Masternode Addr: %s\n", EncodeDestination(activeMasternode.pubKeyMasternode.GetID()));
+            } else {
+                return InitError("You must specify a masternodeprivkey in the configuration. Please see documentation for help.");
+            }
+            break;
+        }
+    }
+
+    load_mn_dat ();
+
+    RegisterValidationInterface(this);
+
+    m_work_thread = std::thread(&TraceThread<std::function<void()>>, "masternodes",
+                std::bind(&CMasternodesInterface::ThreadWork, this));
+    {
+        LOCK(cs_main);
+        UpdatedBlockTip(chainActive.Tip(), nullptr, IsInitialBlockDownload());
+    }
+    return true;
+}
+
+void CMasternodesInterface::Stop() {
+    UnregisterValidationInterface(this);
+
+    if (m_work_thread.joinable())
+        m_work_thread.join();
+
+    save_mn_dat ();
+}
+
+void CMasternodesInterface::ThreadWork() {
+    unsigned int nTick = 0;
+    while (true) {
+        try {
+            if (ShutdownRequested() || m_interrupt) return;
+            std::this_thread::sleep_for(std::chrono::milliseconds(1000));
+            // try to sync from all available nodes, one step at a time
+            masternodeSync.ProcessTick(connman);
+            if (masternodeSync.IsBlockchainSynced()) {
+                nTick++;
+                // make sure to check all masternodes first
+                if (nTick % 5 == 0) mnodeman.Check();
+                mnodeman.ProcessPendingMnbRequests(connman);
+                mnodeman.ProcessPendingMnvRequests(connman);
+                // check if we should activate or ping every few minutes,
+                // slightly postpone first run to give net thread a chance to connect to some peers
+                if (nTick % MASTERNODE_MIN_MNP_SECONDS == 15) {             // 10 min
+                    activeMasternode.ManageState(connman);
+                    save_mn_dat ();
+                }
+                if (nTick % 60 == 0) {                                      // 1 min
+                    netfulfilledman.CheckAndRemove();
+                    mnodeman.ProcessMasternodeConnections(connman);
+                    mnodeman.CheckAndRemove(connman);
+                    mnodeman.WarnMasternodeDaemonUpdates();
+                    mnpayments.CheckAndRemove();
+                }
+                if (fMasternodeMode && (nTick % 300 == 0)) {                // 5 min
+                    mnodeman.DoFullVerificationStep(connman);
+                }
+            }
+        }
+        catch (std::exception &e) {
+            LogPrintf("mn: I/O error - %s\n", e.what());
+        }
+        catch (...) {
+            LogPrintf("mn: I/O error\n");
+        }
+    }
+} 
+
+void CMasternodesInterface::NotifyHeaderTip(const CBlockIndex *pindexNew, bool fInitialDownload)
 {
     masternodeSync.NotifyHeaderTip(pindexNew, fInitialDownload, connman);
 }
 
-void CDSNotificationInterface::UpdatedBlockTip(const CBlockIndex *pindexNew, const CBlockIndex *pindexFork, bool fInitialDownload)
+void CMasternodesInterface::UpdatedBlockTip(const CBlockIndex *pindexNew, const CBlockIndex *pindexFork, bool fInitialDownload)
 {
     if (pindexNew == pindexFork) // blocks were disconnected without any new ones
         return;
@@ -4307,10 +4447,12 @@ void CDSNotificationInterface::UpdatedBlockTip(const CBlockIndex *pindexNew, con
     votes.UpdatedBlockTip (pindexNew);
 }
 
-void CDSNotificationInterface::BlockConnected (const std::shared_ptr<const CBlock> &pblock, const CBlockIndex *pindex)
+void CMasternodesInterface::BlockConnected (const std::shared_ptr<const CBlock> &pblock, const CBlockIndex *pindex)
 {
     votes.BlockConnected(pblock, pindex);
 }
+
+std::unique_ptr<CMasternodesInterface> g_masternodes;
 
 // newest protect
 

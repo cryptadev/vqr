@@ -1,6 +1,6 @@
 // Copyright (c) 2009-2010 Satoshi Nakamoto
 // Copyright (c) 2009-2018 The Bitcoin Core developers
-// Copyright (c) 2021-2025 Uladzimir (t.me/vovanchik_net)
+// Copyright (c) 2021-2026 Uladzimir (t.me/cryptadev)
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
@@ -492,8 +492,8 @@ void POWMinerThread (int POWIndex) {
     unsigned int extra = POWIndex << 24;
     int POWTries = 0x0000FFFF;
     int skip = 0;
-    try {
-        while (true) {
+    while (true) {
+        try {
             if (ShutdownRequested()) break;
             if (POWIndex > POWCount) break;
             if (!isready) {
@@ -504,47 +504,37 @@ void POWMinerThread (int POWIndex) {
             if (g_connman) g_connman->ForEachNode([&count](CNode* pnode) { count++; });
             if (!g_connman || (count < 3)) { skip = 5; continue; };
             int64_t nTime = GetTimeMillis();
-            try {
-                std::unique_ptr<CBlockTemplate> pblocktemplate(BlockAssembler(Params()).CreateNewBlock(POWScript));
-                if (!pblocktemplate.get()) continue;
-                CBlock *pblock = &pblocktemplate->block;
-                IncrementExtraNonce(pblock, chainActive.Tip(), extra);
-                int nMaxTries = POWTries;
-                bool fNegative, fOverflow;
-                arith_uint256 bnTarget;
-                bnTarget.SetCompact (pblock->nBits, &fNegative, &fOverflow);
-                while ((nMaxTries > 0) && (UintToArith256(pblock->GetPoWHash()) >= bnTarget)) {
-                    pblock->nNonce++;
-                    nMaxTries--;
-                }
-                nTime = GetTimeMillis() - nTime; if (nTime < 1) nTime = 1;
-                LogPrintf("POWMinerThread %d speed is %d kb\n", POWIndex, (POWTries-nMaxTries) / nTime);
-                if ((nTime < 15000) || (nTime > 45000)) {
-                    POWTries = ((POWTries-nMaxTries) / nTime) * 30000;
-                    if (POWTries < 0x00000FFF) POWTries = 0x00000FFF;
-                }
-                if (nMaxTries == 0) { continue; }
-                if (UintToArith256(pblock->GetPoWHash()) >= bnTarget) { continue; }
-                std::shared_ptr<const CBlock> shared_pblock = std::make_shared<const CBlock>(*pblock);
-                if (!ProcessNewBlock(Params(), shared_pblock, true, nullptr))
-                    LogPrintf("POWMinerThread: ProcessNewBlock, block not accepted...\n");
-                extra = POWIndex << 24;
-            } catch (...) {
-                PrintExceptionContinue(NULL, "POWMinerThread()->CreateNewBlock");
+            std::unique_ptr<CBlockTemplate> pblocktemplate(BlockAssembler(Params()).CreateNewBlock(POWScript));
+            if (!pblocktemplate.get()) continue;
+            CBlock *pblock = &pblocktemplate->block;
+            IncrementExtraNonce(pblock, chainActive.Tip(), extra);
+            int nMaxTries = POWTries;
+            bool fNegative, fOverflow;
+            arith_uint256 bnTarget;
+            bnTarget.SetCompact (pblock->nBits, &fNegative, &fOverflow);
+            while ((nMaxTries > 0) && (UintToArith256(pblock->GetPoWHash()) >= bnTarget)) {
+                pblock->nNonce++;
+                nMaxTries--;
             }
-        };
-    }
-    catch (const boost::thread_interrupted&) {
-        POWWorked--;
-        LogPrintf("POWMinerThread terminated\n");
-        return;
-    }
-    catch (const std::runtime_error &e) {
-        POWWorked--;
-        LogPrintf("POWMinerThread runtime error: %s\n", e.what());
-        return;
-    } catch (...) {
-        PrintExceptionContinue(NULL, "POWMinerThread()");
+            nTime = GetTimeMillis() - nTime; if (nTime < 1) nTime = 1;
+            LogPrintf("POWMinerThread %d speed is %d kb\n", POWIndex, (POWTries-nMaxTries) / nTime);
+            if ((nTime < 15000) || (nTime > 45000)) {
+                POWTries = ((POWTries-nMaxTries) / nTime) * 30000;
+                if (POWTries < 0x00000FFF) POWTries = 0x00000FFF;
+            }
+            if (nMaxTries == 0) { continue; }
+            if (UintToArith256(pblock->GetPoWHash()) >= bnTarget) { continue; }
+            std::shared_ptr<const CBlock> shared_pblock = std::make_shared<const CBlock>(*pblock);
+            if (ProcessNewBlock(Params(), shared_pblock, true, nullptr)) { skip = 30; }
+                else LogPrintf("POWMinerThread: ProcessNewBlock, block not accepted...\n");
+            extra = POWIndex << 24;
+        }
+        catch (std::exception &e) {
+            LogPrintf("POWMinerThread runtime error: %s\n", e.what());
+        }
+        catch (...) {
+            PrintExceptionContinue(NULL, "POWMinerThread");
+        }
     }
     POWWorked--;
     LogPrintf("POWMinerThread %d stopped\n", POWIndex);
@@ -586,8 +576,8 @@ void POSMinerThread (int POSIndex) {
     POSWorked++;
     int skip = 0;
     int index = 0;
-    try {
-        while (true) {
+    while (true) {
+        try {
             if (ShutdownRequested()) break;
             if (POSIndex > POSCount) break;
             if (!isready) {
@@ -603,31 +593,22 @@ void POSMinerThread (int POSIndex) {
             if (++index > wallets.size()) index = 1;
             std::shared_ptr<CWallet> pwallet = wallets[index-1];
             if (pwallet->IsLocked(true)) { skip = 3; continue; };
-            try {
-                bool fPoSCancel = false;
-                std::unique_ptr<CBlockTemplate> pblocktemplate(BlockAssembler(Params()).CreateNewPoSBlock(fPoSCancel, pwallet));
-                if (fPoSCancel) { skip = 3; continue; }
-                if (!pblocktemplate.get()) continue;
-                CBlock *pblock = &pblocktemplate->block;
-                LogPrintf("POSMinerThread: proof-of-stake block found %s\n", pblock->GetHash().ToString());
-                std::shared_ptr<const CBlock> shared_pblock = std::make_shared<const CBlock>(*pblock);
-                if (ProcessNewBlock(Params(), shared_pblock, true, nullptr)) { skip = 30; };
-            } catch (...) {
-                PrintExceptionContinue(NULL, "POSMinerThread()");
-            }
-            skip = 1;
+            bool fPoSCancel = false;
+            std::unique_ptr<CBlockTemplate> pblocktemplate(BlockAssembler(Params()).CreateNewPoSBlock(fPoSCancel, pwallet));
+            if (fPoSCancel) { skip = 3; continue; }
+            if (!pblocktemplate.get()) continue;
+            CBlock *pblock = &pblocktemplate->block;
+            LogPrintf("POSMinerThread: proof-of-stake block found %s\n", pblock->GetHash().ToString());
+            std::shared_ptr<const CBlock> shared_pblock = std::make_shared<const CBlock>(*pblock);
+            if (ProcessNewBlock(Params(), shared_pblock, true, nullptr)) { skip = 30; }
+                else LogPrintf("POSMinerThread: ProcessNewBlock, block not accepted...\n");
         }
-    }
-    catch (const boost::thread_interrupted&) {
-        POSWorked--;
-        LogPrintf("POSMinerThread terminated\n");
-        return;
-    } catch (const std::runtime_error &e) {
-        POSWorked--;
-        LogPrintf("POSMinerThread runtime error: %s\n", e.what());
-        return;
-    } catch (...) {
-        PrintExceptionContinue(NULL, "POSMinerThread()");
+        catch (std::exception &e) {
+            LogPrintf("POSMinerThread runtime error: %s\n", e.what());
+        }
+        catch (...) {
+            PrintExceptionContinue(NULL, "POSMinerThread");
+        }
     }
     POSWorked--;
     LogPrintf("POSMinerThread %d stopped\n", POSIndex);

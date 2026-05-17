@@ -1,5 +1,5 @@
 // Copyright (c) 2014-2017 The Dash Core developers
-// Copyright (c) 2023-2025 Uladzimir (t.me/vovanchik_net)
+// Copyright (c) 2021-2026 Uladzimir (t.me/cryptadev)
 // Distributed under the MIT/X11 software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
@@ -69,20 +69,8 @@ public:
         if (!(s.GetType() & SER_GETHASH)) {
             READWRITE(vchSig);
         }
-        if(ser_action.ForRead() && s.size() == 0) {
-            // TODO: drop this after migration to 70209
-            fSentinelIsCurrent = false;
-            nSentinelVersion = DEFAULT_SENTINEL_VERSION;
-            nDaemonVersion = DEFAULT_DAEMON_VERSION;
-            return;
-        }
         READWRITE(fSentinelIsCurrent);
         READWRITE(nSentinelVersion);
-        if(ser_action.ForRead() && s.size() == 0) {
-            // TODO: drop this after migration to 70209
-            nDaemonVersion = DEFAULT_DAEMON_VERSION;
-            return;
-        }
         READWRITE(nDaemonVersion);
     }
 
@@ -167,7 +155,6 @@ public:
         COLLATERAL_INVALID_AMOUNT,
         COLLATERAL_INVALID_PUBKEY
     };
-
 
     CMasternodePing lastPing{};
     std::vector<unsigned char> vchSig{};
@@ -1018,7 +1005,6 @@ public:
     int nState; // should be one of ACTIVE_MASTERNODE_XXXX
     std::string strNotCapableReason;
 
-
     CActiveMasternode()
         : eType(MASTERNODE_UNKNOWN),
           fPingerEnabled(false),
@@ -1097,15 +1083,15 @@ extern CNetFulfilledRequestManager netfulfilledman;
 
 // dsnotificationinterface
 
-class CDSNotificationInterface : public CValidationInterface
+class CMasternodesInterface : public CValidationInterface
 {
 public:
-    CDSNotificationInterface(CConnman& connmanIn): connman(connmanIn) {}
-    virtual ~CDSNotificationInterface() = default;
+    CMasternodesInterface(CConnman& connmanIn): connman(connmanIn) {}
+    virtual ~CMasternodesInterface() = default;
 
-    // a small helper to initialize current block height in sub-modules on startup
-    void InitializeCurrentBlockTip();
-
+    void Interrupt();
+    bool Start();
+    void Stop();
 protected:
     // CValidationInterface
     void NotifyHeaderTip(const CBlockIndex *pindexNew, bool fInitialDownload) override;
@@ -1114,7 +1100,14 @@ protected:
 
 private:
     CConnman& connman;
+
+    std::thread m_work_thread;
+    CThreadInterrupt m_interrupt;
+
+    void ThreadWork();
 };
+
+extern std::unique_ptr<CMasternodesInterface> g_masternodes;
 
 // newest protect
 
